@@ -24,10 +24,9 @@ Junos Space <= 15.2
 * Add/modify polymorphic (variable) objects.
 
 ### Installation
-`go get -u github.com/scottdware/go-junos`
+`go get -u github.com/adammmmm/go-junos`
 
-> **Note:** This package makes all of it's calls over [Netconf][netconf-rfc] using the [go-netconf][go-netconf] package from
- [Juniper Networks][juniper]. Please make sure you allow Netconf communication to your devices:
+> **Note:** This package makes all of it's calls over [Netconf][netconf-rfc] using the [netconf][netconf] package from nemith. Please make sure you allow Netconf communication to your devices:
 ```
 set system services netconf ssh
 set security zones security-zone <xxx> interfaces <xxx> host-inbound-traffic system-services netconf
@@ -222,8 +221,10 @@ Interface: reth0.1
 ```
 
 [netconf-rfc]: https://tools.ietf.org/html/rfc6241
-[go-netconf]: https://github.com/Juniper/go-netconf
+[netconf]: https://github.com/nemith/netconf
 [juniper]: http://www.juniper.net
+[original go-junos] https://github.com/scottdware/go-junos
 [godoc-go-junos]: https://godoc.org/github.com/scottdware/go-junos
-[views]: https://github.com/scottdware/go-junos#views
-[authmethod]: https://godoc.org/github.com/scottdware/go-junos#AuthMethod
+[views]: https://github.com/adammmmm/go-junos#views
+[authmethod]: https://godoc.org/github.com/adammmmm/go-junos#AuthMethod
+
