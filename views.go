@@ -1,13 +1,30 @@
 package junos
 
 import (
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
-	"github.com/Juniper/go-netconf/netconf"
+	"github.com/nemith/netconf"
 )
+
+type TrimmedString string
+
+func (t *TrimmedString) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var v string
+	if err := d.DecodeElement(&v, &start); err != nil {
+		return err
+	}
+	*t = TrimmedString(strings.TrimSpace(v))
+	return nil
+}
+
+func (t TrimmedString) String() string {
+	return string(t)
+}
 
 // ArpTable contains the ARP table on the device.
 type ArpTable struct {
@@ -17,9 +34,9 @@ type ArpTable struct {
 
 // ArpEntry holds each individual ARP entry.
 type ArpEntry struct {
-	MACAddress string `xml:"mac-address"`
-	IPAddress  string `xml:"ip-address"`
-	Interface  string `xml:"interface-name"`
+	MACAddress TrimmedString `xml:"mac-address"`
+	IPAddress  TrimmedString `xml:"ip-address"`
+	Interface  TrimmedString `xml:"interface-name"`
 }
 
 // RoutingTable contains every routing table on the device.
@@ -29,25 +46,25 @@ type RoutingTable struct {
 
 // RouteTable holds all the route information for each table.
 type RouteTable struct {
-	Name           string  `xml:"table-name"`
-	TotalRoutes    int     `xml:"total-route-count"`
-	ActiveRoutes   int     `xml:"active-route-count"`
-	HolddownRoutes int     `xml:"holddown-route-count"`
-	HiddenRoutes   int     `xml:"hidden-routes"`
-	Entries        []Route `xml:"rt"`
+	Name           TrimmedString `xml:"table-name"`
+	TotalRoutes    int           `xml:"total-route-count"`
+	ActiveRoutes   int           `xml:"active-route-count"`
+	HolddownRoutes int           `xml:"holddown-route-count"`
+	HiddenRoutes   int           `xml:"hidden-routes"`
+	Entries        []Route       `xml:"rt"`
 }
 
 // Route holds information about each individual route.
 type Route struct {
-	Destination           string `xml:"rt-destination"`
-	Active                string `xml:"rt-entry>active-tag"`
-	Protocol              string `xml:"rt-entry>protocol-name"`
-	Preference            int    `xml:"rt-entry>preference"`
-	Age                   string `xml:"rt-entry>age"`
-	NextHop               string `xml:"rt-entry>nh>to,omitempty"`
-	NextHopInterface      string `xml:"rt-entry>nh>via,omitempty"`
-	NextHopTable          string `xml:"rt-entry>nh>nh-table,omitempty"`
-	NextHopLocalInterface string `xml:"rt-entry>nh>nh-local-interface,omitempty"`
+	Destination           TrimmedString `xml:"rt-destination"`
+	Active                TrimmedString `xml:"rt-entry>active-tag"`
+	Protocol              TrimmedString `xml:"rt-entry>protocol-name"`
+	Preference            int           `xml:"rt-entry>preference"`
+	Age                   TrimmedString `xml:"rt-entry>age"`
+	NextHop               TrimmedString `xml:"rt-entry>nh>to,omitempty"`
+	NextHopInterface      TrimmedString `xml:"rt-entry>nh>via,omitempty"`
+	NextHopTable          TrimmedString `xml:"rt-entry>nh>nh-table,omitempty"`
+	NextHopLocalInterface TrimmedString `xml:"rt-entry>nh>nh-local-interface,omitempty"`
 }
 
 // Interfaces contains information about every interface on the device.
@@ -57,20 +74,20 @@ type Interfaces struct {
 
 // PhysicalInterface contains information about each individual physical interface.
 type PhysicalInterface struct {
-	Name                    string             `xml:"name"`
-	AdminStatus             string             `xml:"admin-status"`
-	OperStatus              string             `xml:"oper-status"`
+	Name                    TrimmedString      `xml:"name"`
+	AdminStatus             TrimmedString      `xml:"admin-status"`
+	OperStatus              TrimmedString      `xml:"oper-status"`
 	LocalIndex              int                `xml:"local-index"`
 	SNMPIndex               int                `xml:"snmp-index"`
-	LinkLevelType           string             `xml:"link-level-type"`
-	InterfaceType           string             `xml:"if-type"`
-	MTU                     string             `xml:"mtu"`
-	LinkMode                string             `xml:"link-mode"`
-	Speed                   string             `xml:"speed"`
-	FlowControl             string             `xml:"if-flow-control"`
-	AutoNegotiation         string             `xml:"if-auto-negotiation"`
-	HardwarePhysicalAddress string             `xml:"hardware-physical-address"`
-	Flapped                 string             `xml:"interface-flapped"`
+	LinkLevelType           TrimmedString      `xml:"link-level-type"`
+	InterfaceType           TrimmedString      `xml:"if-type"`
+	MTU                     TrimmedString      `xml:"mtu"`
+	LinkMode                TrimmedString      `xml:"link-mode"`
+	Speed                   TrimmedString      `xml:"speed"`
+	FlowControl             TrimmedString      `xml:"if-flow-control"`
+	AutoNegotiation         TrimmedString      `xml:"if-auto-negotiation"`
+	HardwarePhysicalAddress TrimmedString      `xml:"hardware-physical-address"`
+	Flapped                 TrimmedString      `xml:"interface-flapped"`
 	InputBps                int                `xml:"traffic-statistics>input-bps"`
 	InputPps                int                `xml:"traffic-statistics>input-pps"`
 	OutputBps               int                `xml:"traffic-statistics>output-bps"`
@@ -80,10 +97,10 @@ type PhysicalInterface struct {
 
 // LogicalInterface contains information about the logical interfaces tied to a physical interface.
 type LogicalInterface struct {
-	Name             string          `xml:"name"`
+	Name             TrimmedString   `xml:"name"`
 	LocalIndex       int             `xml:"local-index"`
 	SNMPIndex        int             `xml:"snmp-index"`
-	Encapsulation    string          `xml:"encapsulation"`
+	Encapsulation    TrimmedString   `xml:"encapsulation"`
 	LAGInputPackets  uint64          `xml:"lag-traffic-statistics>lag-bundle>input-packets"`
 	LAGInputPps      int             `xml:"lag-traffic-statistics>lag-bundle>input-pps"`
 	LAGInputBytes    int             `xml:"lag-traffic-statistics>lag-bundle>input-bytes"`
@@ -92,19 +109,19 @@ type LogicalInterface struct {
 	LAGOutputPps     int             `xml:"lag-traffic-statistics>lag-bundle>output-pps"`
 	LAGOutputBytes   int             `xml:"lag-traffic-statistics>lag-bundle>output-bytes"`
 	LAGOutputBps     int             `xml:"lag-traffic-statistics>lag-bundle>output-bps"`
-	ZoneName         string          `xml:"logical-interface-zone-name"`
+	ZoneName         TrimmedString   `xml:"logical-interface-zone-name"`
 	InputPackets     uint64          `xml:"traffic-statistics>input-packets"`
 	OutputPackets    uint64          `xml:"traffic-statistics>output-packets"`
 	AddressFamilies  []AddressFamily `xml:"address-family"`
-	LinkAddress      string          `xml:"link-address,omitempty"`
+	LinkAddress      TrimmedString   `xml:"link-address,omitempty"`
 }
 
 type AddressFamily struct {
-	Name               string `xml:"address-family-name"`
-	AggregatedEthernet string `xml:"ae-bundle-name,omitempty"`
-	CIDR               string `xml:"interface-address>ifa-destination"`
-	IPAddress          string `xml:"interface-address>ifa-local"`
-	MTU                string `xml:"mtu"`
+	Name               TrimmedString `xml:"address-family-name"`
+	AggregatedEthernet TrimmedString `xml:"ae-bundle-name,omitempty"`
+	CIDR               TrimmedString `xml:"interface-address>ifa-destination"`
+	IPAddress          TrimmedString `xml:"interface-address>ifa-local"`
+	MTU                TrimmedString `xml:"mtu"`
 }
 
 // Vlans contains all of the VLAN information on the device.
@@ -114,9 +131,9 @@ type Vlans struct {
 
 // Vlan contains information about each individual VLAN.
 type Vlan struct {
-	Name             string   `xml:"l2ng-l2rtb-vlan-name"`
-	Tag              int      `xml:"l2ng-l2rtb-vlan-tag"`
-	MemberInterfaces []string `xml:"l2ng-l2rtb-vlan-member>l2ng-l2rtb-vlan-member-interface"`
+	Name             TrimmedString   `xml:"l2ng-l2rtb-vlan-name"`
+	Tag              int             `xml:"l2ng-l2rtb-vlan-tag"`
+	MemberInterfaces []TrimmedString `xml:"l2ng-l2rtb-vlan-member>l2ng-l2rtb-vlan-member-interface"`
 }
 
 type LLDPNeighbors struct {
@@ -124,13 +141,13 @@ type LLDPNeighbors struct {
 }
 
 type LLDPNeighbor struct {
-	LocalPortId              string `xml:"lldp-local-port-id"`
-	LocalParentInterfaceName string `xml:"lldp-local-parent-interface-name"`
-	RemoteChassisIdSubtype   string `xml:"lldp-remote-chassis-id-subtype"`
-	RemoteChassisId          string `xml:"lldp-remote-chassis-id"`
-	RemotePortDescription    string `xml:"lldp-remote-port-description"`
-	RemotePortId             string `xml:"lldp-remote-port-id"`
-	RemoteSystemName         string `xml:"lldp-remote-system-name"`
+	LocalPortId              TrimmedString `xml:"lldp-local-port-id"`
+	LocalParentInterfaceName TrimmedString `xml:"lldp-local-parent-interface-name"`
+	RemoteChassisIdSubtype   TrimmedString `xml:"lldp-remote-chassis-id-subtype"`
+	RemoteChassisId          TrimmedString `xml:"lldp-remote-chassis-id"`
+	RemotePortDescription    TrimmedString `xml:"lldp-remote-port-description"`
+	RemotePortId             TrimmedString `xml:"lldp-remote-port-id"`
+	RemoteSystemName         TrimmedString `xml:"lldp-remote-system-name"`
 }
 
 // EthernetSwitchingTable contains the ethernet-switching table on the device.
@@ -140,22 +157,22 @@ type EthernetSwitchingTable struct {
 
 // L2MACEntry contains information about every MAC address on each VLAN.
 type L2MACEntry struct {
-	GlobalMACCount  int        `xml:"mac-count-global"`
-	LearnedMACCount int        `xml:"learnt-mac-count"`
-	RoutingInstance string     `xml:"l2ng-l2-mac-routing-instance"`
-	VlanID          int        `xml:"l2ng-l2-vlan-id"`
-	MACEntries      []MACEntry `xml:"l2ng-mac-entry"`
+	GlobalMACCount  int           `xml:"mac-count-global"`
+	LearnedMACCount int           `xml:"learnt-mac-count"`
+	RoutingInstance TrimmedString `xml:"l2ng-l2-mac-routing-instance"`
+	VlanID          int           `xml:"l2ng-l2-vlan-id"`
+	MACEntries      []MACEntry    `xml:"l2ng-mac-entry"`
 }
 
 // MACEntry contains information about each individual MAC address. Flags are: S - static MAC, D - dynamic MAC,
 // L - locally learned, P - persistent static, SE - statistics enabled, NM - non configured MAC, R - remote PE MAC,
 // O - ovsdb MAC.
 type MACEntry struct {
-	VlanName         string `xml:"l2ng-l2-mac-vlan-name"`
-	MACAddress       string `xml:"l2ng-l2-mac-address"`
-	Age              string `xml:"l2ng-l2-mac-age"`
-	Flags            string `xml:"l2ng-l2-mac-flags"`
-	LogicalInterface string `xml:"l2ng-l2-mac-logical-interface"`
+	VlanName         TrimmedString `xml:"l2ng-l2-mac-vlan-name"`
+	MACAddress       TrimmedString `xml:"l2ng-l2-mac-address"`
+	Age              TrimmedString `xml:"l2ng-l2-mac-age"`
+	Flags            TrimmedString `xml:"l2ng-l2-mac-flags"`
+	LogicalInterface TrimmedString `xml:"l2ng-l2-mac-logical-interface"`
 }
 
 // HardwareInventory contains all the hardware information about the device.
@@ -183,92 +200,92 @@ type SystemStorage struct {
 
 // FileSystem contains the information for each partition.
 type FileSystem struct {
-	Name            string `xml:"filesystem-name"`
-	TotalBlocks     int    `xml:"total-blocks"`
-	UsedBlocks      int    `xml:"used-blocks"`
-	AvailableBlocks int    `xml:"available-blocks"`
-	UsedPercent     string `xml:"used-percent"`
-	MountedOn       string `xml:"mounted-on"`
+	Name            TrimmedString `xml:"filesystem-name"`
+	TotalBlocks     int           `xml:"total-blocks"`
+	UsedBlocks      int           `xml:"used-blocks"`
+	AvailableBlocks int           `xml:"available-blocks"`
+	UsedPercent     TrimmedString `xml:"used-percent"`
+	MountedOn       TrimmedString `xml:"mounted-on"`
 }
 
 // Chassis contains all of the hardware information for each chassis, such as a clustered pair of SRX's or a
 // virtual-chassis configuration.
 type Chassis struct {
-	Name         string   `xml:"name"`
-	SerialNumber string   `xml:"serial-number"`
-	Description  string   `xml:"description"`
-	Modules      []Module `xml:"chassis-module"`
+	Name         TrimmedString `xml:"name"`
+	SerialNumber TrimmedString `xml:"serial-number"`
+	Description  TrimmedString `xml:"description"`
+	Modules      []Module      `xml:"chassis-module"`
 }
 
 // Module contains information about each individual module.
 type Module struct {
-	Name         string      `xml:"name"`
-	Version      string      `xml:"version,omitempty"`
-	PartNumber   string      `xml:"part-number"`
-	SerialNumber string      `xml:"serial-number"`
-	Description  string      `xml:"description"`
-	CLEICode     string      `xml:"clei-code"`
-	ModuleNumber string      `xml:"module-number"`
-	SubModules   []SubModule `xml:"chassis-sub-module"`
+	Name         TrimmedString `xml:"name"`
+	Version      TrimmedString `xml:"version,omitempty"`
+	PartNumber   TrimmedString `xml:"part-number"`
+	SerialNumber TrimmedString `xml:"serial-number"`
+	Description  TrimmedString `xml:"description"`
+	CLEICode     TrimmedString `xml:"clei-code"`
+	ModuleNumber TrimmedString `xml:"module-number"`
+	SubModules   []SubModule   `xml:"chassis-sub-module"`
 }
 
 // SubModule contains information about each individual sub-module.
 type SubModule struct {
-	Name          string         `xml:"name"`
-	Version       string         `xml:"version,omitempty"`
-	PartNumber    string         `xml:"part-number"`
-	SerialNumber  string         `xml:"serial-number"`
-	Description   string         `xml:"description"`
-	CLEICode      string         `xml:"clei-code"`
-	ModuleNumber  string         `xml:"module-number"`
+	Name          TrimmedString  `xml:"name"`
+	Version       TrimmedString  `xml:"version,omitempty"`
+	PartNumber    TrimmedString  `xml:"part-number"`
+	SerialNumber  TrimmedString  `xml:"serial-number"`
+	Description   TrimmedString  `xml:"description"`
+	CLEICode      TrimmedString  `xml:"clei-code"`
+	ModuleNumber  TrimmedString  `xml:"module-number"`
 	SubSubModules []SubSubModule `xml:"chassis-sub-sub-module"`
 }
 
 // SubSubModule contains information about each sub-sub module, such as SFP's.
 type SubSubModule struct {
-	Name             string            `xml:"name"`
-	Version          string            `xml:"version,omitempty"`
-	PartNumber       string            `xml:"part-number"`
-	SerialNumber     string            `xml:"serial-number"`
-	Description      string            `xml:"description"`
+	Name             TrimmedString     `xml:"name"`
+	Version          TrimmedString     `xml:"version,omitempty"`
+	PartNumber       TrimmedString     `xml:"part-number"`
+	SerialNumber     TrimmedString     `xml:"serial-number"`
+	Description      TrimmedString     `xml:"description"`
 	SubSubSubModules []SubSubSubModule `xml:"chassis-sub-sub-sub-module"`
 }
 
 // SubSubSubModule contains information about each sub-sub-sub module, such as SFP's on a
 // PIC, which is tied to a MIC on an MX.
 type SubSubSubModule struct {
-	Name         string `xml:"name"`
-	Version      string `xml:"version,omitempty"`
-	PartNumber   string `xml:"part-number"`
-	SerialNumber string `xml:"serial-number"`
-	Description  string `xml:"description"`
+	Name         TrimmedString `xml:"name"`
+	Version      TrimmedString `xml:"version,omitempty"`
+	PartNumber   TrimmedString `xml:"part-number"`
+	SerialNumber TrimmedString `xml:"serial-number"`
+	Description  TrimmedString `xml:"description"`
 }
 
 // VirtualChassis contains information regarding the virtual-chassis setup for the device.
 type VirtualChassis struct {
-	PreProvisionedVCID   string     `xml:"preprovisioned-virtual-chassis-information>virtual-chassis-id"`
-	PreProvisionedVCMode string     `xml:"preprovisioned-virtual-chassis-information>virtual-chassis-mode"`
-	Members              []VCMember `xml:"member-list>member"`
+	PreProvisionedVCID   TrimmedString `xml:"preprovisioned-virtual-chassis-information>virtual-chassis-id"`
+	PreProvisionedVCMode TrimmedString `xml:"preprovisioned-virtual-chassis-information>virtual-chassis-mode"`
+	Members              []VCMember    `xml:"member-list>member"`
 }
 
 // VCMember contains information about each individual virtual-chassis member.
 type VCMember struct {
-	Status       string             `xml:"member-status"`
+	Status       TrimmedString      `xml:"member-status"`
 	ID           int                `xml:"member-id"`
-	FPCSlot      string             `xml:"fpc-slot"`
-	SerialNumber string             `xml:"member-serial-number"`
-	Model        string             `xml:"member-model"`
+	FPCSlot      TrimmedString      `xml:"fpc-slot"`
+	SerialNumber TrimmedString      `xml:"member-serial-number"`
+	Model        TrimmedString      `xml:"member-model"`
 	Priority     int                `xml:"member-priority"`
-	MixedMode    string             `xml:"member-mixed-mode"`
-	RouteMode    string             `xml:"member-route-mode"`
-	Role         string             `xml:"member-role"`
+	MixedMode    TrimmedString      `xml:"member-mixed-mode"`
+	RouteMode    TrimmedString      `xml:"member-route-mode"`
+	Role         TrimmedString      `xml:"member-role"`
 	Neighbors    []VCMemberNeighbor `xml:"neighbor-list>neighbor"`
 }
 
 // VCMemberNeighbor contains information about each virtual-chassis member neighbor.
 type VCMemberNeighbor struct {
-	ID        int    `xml:"neighbor-id"`
-	Interface string `xml:"neighbor-interface"`
+	ID        int           `xml:"neighbor-id"`
+	Interface TrimmedString `xml:"neighbor-interface"`
 }
 
 // BGPTable contains information about every BGP peer configured on the device.
@@ -281,19 +298,19 @@ type BGPTable struct {
 
 // BGPPeer contains information about each individual BGP peer.
 type BGPPeer struct {
-	Address            string `xml:"peer-address"`
-	ASN                int    `xml:"peer-as"`
-	InputMessages      int    `xml:"input-messages"`
-	OutputMessages     int    `xml:"output-messages"`
-	QueuedRoutes       int    `xml:"route-queue-count"`
-	Flaps              int    `xml:"flap-count"`
-	ElapsedTime        string `xml:"elapsed-time"`
-	State              string `xml:"peer-state"`
-	RoutingTable       string `xml:"bgp-rib>name"`
-	ActivePrefixes     int    `xml:"bgp-rib>active-prefix-count"`
-	ReceivedPrefixes   int    `xml:"bgp-rib>received-prefix-count"`
-	AcceptedPrefixes   int    `xml:"bgp-rib>accepted-prefix-count"`
-	SuppressedPrefixes int    `xml:"bgp-rib>suppressed-prefix-count"`
+	Address            TrimmedString `xml:"peer-address"`
+	ASN                int           `xml:"peer-as"`
+	InputMessages      int           `xml:"input-messages"`
+	OutputMessages     int           `xml:"output-messages"`
+	QueuedRoutes       int           `xml:"route-queue-count"`
+	Flaps              int           `xml:"flap-count"`
+	ElapsedTime        TrimmedString `xml:"elapsed-time"`
+	State              TrimmedString `xml:"peer-state"`
+	RoutingTable       TrimmedString `xml:"bgp-rib>name"`
+	ActivePrefixes     int           `xml:"bgp-rib>active-prefix-count"`
+	ReceivedPrefixes   int           `xml:"bgp-rib>received-prefix-count"`
+	AcceptedPrefixes   int           `xml:"bgp-rib>accepted-prefix-count"`
+	SuppressedPrefixes int           `xml:"bgp-rib>suppressed-prefix-count"`
 }
 
 // StaticNats contains the static NATs configured on the device.
@@ -309,25 +326,25 @@ type srxStaticNats struct {
 
 // StaticNatEntry holds each individual static NAT entry.
 type StaticNatEntry struct {
-	Name                    string `xml:"rule-name"`
-	SetName                 string `xml:"rule-set-name"`
-	ID                      string `xml:"rule-id"`
-	RuleMatchingPosition    int    `xml:"rule-matching-position"`
-	FromContext             string `xml:"rule-from-context"`
-	FromZone                string `xml:"rule-from-context-name"`
-	SourceAddressLowRange   string `xml:"static-source-address-range-entry>rule-source-address-low-range"`
-	SourceAddressHighRange  string `xml:"static-source-address-range-entry>rule-source-address-high-range"`
-	DestinaionAddressPrefix string `xml:"rule-destination-address-prefix"`
-	DestinationPortLow      int    `xml:"rule-destination-port-low"`
-	DestinationPortHigh     int    `xml:"rule-destination-port-high"`
-	HostAddressPrefix       string `xml:"rule-host-address-prefix"`
-	HostPortLow             int    `xml:"rule-host-port-low"`
-	HostPortHigh            int    `xml:"rule-host-port-high"`
-	Netmask                 string `xml:"rule-address-netmask"`
-	RoutingInstance         string `xml:"rule-host-routing-instance"`
-	TranslationHits         int    `xml:"rule-translation-hits"`
-	SuccessfulSessions      int    `xml:"succ-hits"`
-	ConcurrentHits          int    `xml:"concurrent-hits"`
+	Name                    TrimmedString `xml:"rule-name"`
+	SetName                 TrimmedString `xml:"rule-set-name"`
+	ID                      TrimmedString `xml:"rule-id"`
+	RuleMatchingPosition    int           `xml:"rule-matching-position"`
+	FromContext             TrimmedString `xml:"rule-from-context"`
+	FromZone                TrimmedString `xml:"rule-from-context-name"`
+	SourceAddressLowRange   TrimmedString `xml:"static-source-address-range-entry>rule-source-address-low-range"`
+	SourceAddressHighRange  TrimmedString `xml:"static-source-address-range-entry>rule-source-address-high-range"`
+	DestinaionAddressPrefix TrimmedString `xml:"rule-destination-address-prefix"`
+	DestinationPortLow      int           `xml:"rule-destination-port-low"`
+	DestinationPortHigh     int           `xml:"rule-destination-port-high"`
+	HostAddressPrefix       TrimmedString `xml:"rule-host-address-prefix"`
+	HostPortLow             int           `xml:"rule-host-port-low"`
+	HostPortHigh            int           `xml:"rule-host-port-high"`
+	Netmask                 TrimmedString `xml:"rule-address-netmask"`
+	RoutingInstance         TrimmedString `xml:"rule-host-routing-instance"`
+	TranslationHits         int           `xml:"rule-translation-hits"`
+	SuccessfulSessions      int           `xml:"succ-hits"`
+	ConcurrentHits          int           `xml:"concurrent-hits"`
 }
 
 // SourceNats contains the source NATs configured on the device.
@@ -342,31 +359,31 @@ type srxSourceNats struct {
 
 // SourceNatEntry holds each individual source NAT entry.
 type SourceNatEntry struct {
-	Name                     string   `xml:"rule-name"`
-	SetName                  string   `xml:"rule-set-name"`
-	ID                       string   `xml:"rule-id"`
-	RuleMatchingPosition     int      `xml:"rule-matching-position"`
-	FromContext              string   `xml:"rule-from-context"`
-	FromZone                 string   `xml:"rule-from-context-name"`
-	ToContext                string   `xml:"rule-to-context"`
-	ToZone                   string   `xml:"rule-to-context-name"`
-	SourceAddressLowRange    string   `xml:"source-address-range-entry>rule-source-address-low-range"`
-	SourceAddressHighRange   string   `xml:"source-address-range-entryrule-source-address-high-range"`
-	SourceAddresses          []string `xml:"source-address-range-entry>rule-source-address"`
-	DestinationAddresses     []string `xml:"destination-address-range-entry>rule-destination-address"`
-	DestinationPortLow       int      `xml:"destination-port-entry>rule-destination-port-low"`
-	DestinationPortHigh      int      `xml:"destination-port-entry>rule-destination-port-high"`
-	SourcePortLow            int      `xml:"source-port-entry>rule-source-port-low"`
-	SourcePortHigh           int      `xml:"source-port-entry>rule-source-port-high"`
-	SourceNatProtocol        string   `xml:"src-nat-protocol-entry"`
-	RuleAction               string   `xml:"source-nat-rule-action-entry>source-nat-rule-action"`
-	PersistentNatType        string   `xml:"source-nat-rule-action-entry>persistent-nat-type"`
-	PersistentNatMappingType string   `xml:"source-nat-rule-action-entry>persistent-nat-mapping-type"`
-	PersistentNatTimeout     int      `xml:"source-nat-rule-action-entry>persistent-nat-timeout"`
-	PersistentNatMaxSession  int      `xml:"source-nat-rule-action-entry>persistent-nat-max-session"`
-	TranslationHits          int      `xml:"source-nat-rule-hits-entry>rule-translation-hits"`
-	SuccessfulSessions       int      `xml:"source-nat-rule-hits-entry>succ-hits"`
-	ConcurrentHits           int      `xml:"source-nat-rule-hits-entry>concurrent-hits"`
+	Name                     TrimmedString   `xml:"rule-name"`
+	SetName                  TrimmedString   `xml:"rule-set-name"`
+	ID                       TrimmedString   `xml:"rule-id"`
+	RuleMatchingPosition     int             `xml:"rule-matching-position"`
+	FromContext              TrimmedString   `xml:"rule-from-context"`
+	FromZone                 TrimmedString   `xml:"rule-from-context-name"`
+	ToContext                TrimmedString   `xml:"rule-to-context"`
+	ToZone                   TrimmedString   `xml:"rule-to-context-name"`
+	SourceAddressLowRange    TrimmedString   `xml:"source-address-range-entry>rule-source-address-low-range"`
+	SourceAddressHighRange   TrimmedString   `xml:"source-address-range-entryrule-source-address-high-range"`
+	SourceAddresses          []TrimmedString `xml:"source-address-range-entry>rule-source-address"`
+	DestinationAddresses     []TrimmedString `xml:"destination-address-range-entry>rule-destination-address"`
+	DestinationPortLow       int             `xml:"destination-port-entry>rule-destination-port-low"`
+	DestinationPortHigh      int             `xml:"destination-port-entry>rule-destination-port-high"`
+	SourcePortLow            int             `xml:"source-port-entry>rule-source-port-low"`
+	SourcePortHigh           int             `xml:"source-port-entry>rule-source-port-high"`
+	SourceNatProtocol        TrimmedString   `xml:"src-nat-protocol-entry"`
+	RuleAction               TrimmedString   `xml:"source-nat-rule-action-entry>source-nat-rule-action"`
+	PersistentNatType        TrimmedString   `xml:"source-nat-rule-action-entry>persistent-nat-type"`
+	PersistentNatMappingType TrimmedString   `xml:"source-nat-rule-action-entry>persistent-nat-mapping-type"`
+	PersistentNatTimeout     int             `xml:"source-nat-rule-action-entry>persistent-nat-timeout"`
+	PersistentNatMaxSession  int             `xml:"source-nat-rule-action-entry>persistent-nat-max-session"`
+	TranslationHits          int             `xml:"source-nat-rule-hits-entry>rule-translation-hits"`
+	SuccessfulSessions       int             `xml:"source-nat-rule-hits-entry>succ-hits"`
+	ConcurrentHits           int             `xml:"source-nat-rule-hits-entry>concurrent-hits"`
 }
 
 // FirewallPolicy contains the entire firewall policy for the device.
@@ -381,26 +398,26 @@ type srxFirewallPolicy struct {
 
 // SecurityContext contains the policies for each context, such as rules from trust to untrust zones.
 type SecurityContext struct {
-	SourceZone      string `xml:"context-information>source-zone-name"`
-	DestinationZone string `xml:"context-information>destination-zone-name"`
-	Rules           []Rule `xml:"policies>policy-information"`
+	SourceZone      TrimmedString `xml:"context-information>source-zone-name"`
+	DestinationZone TrimmedString `xml:"context-information>destination-zone-name"`
+	Rules           []Rule        `xml:"policies>policy-information"`
 }
 
 // Rule contains each individual element that makes up a security policy rule.
 type Rule struct {
-	Name                 string   `xml:"policy-name"`
-	State                string   `xml:"policy-state"`
-	Identifier           int      `xml:"policy-identifier"`
-	ScopeIdentifier      int      `xml:"scope-policy-identifier"`
-	SequenceNumber       int      `xml:"policy-sequence-number"`
-	SourceAddresses      []string `xml:"source-addresses>source-address>address-name"`
-	DestinationAddresses []string `xml:"destination-addresses>destination-address>address-name"`
-	Applications         []string `xml:"applications>application>application-name"`
-	SourceIdentities     []string `xml:"source-identities>source-identity>role-name"`
-	PolicyAction         string   `xml:"policy-action>action-type"`
+	Name                 TrimmedString   `xml:"policy-name"`
+	State                TrimmedString   `xml:"policy-state"`
+	Identifier           int             `xml:"policy-identifier"`
+	ScopeIdentifier      int             `xml:"scope-policy-identifier"`
+	SequenceNumber       int             `xml:"policy-sequence-number"`
+	SourceAddresses      []TrimmedString `xml:"source-addresses>source-address>address-name"`
+	DestinationAddresses []TrimmedString `xml:"destination-addresses>destination-address>address-name"`
+	Applications         []TrimmedString `xml:"applications>application>application-name"`
+	SourceIdentities     []TrimmedString `xml:"source-identities>source-identity>role-name"`
+	PolicyAction         TrimmedString   `xml:"policy-action>action-type"`
 	PolicyTCPOptions     struct {
-		SYNCheck      string `xml:"policy-tcp-options-syn-check"`
-		SequenceCheck string `xml:"policy-tcp-options-sequence-check"`
+		SYNCheck      TrimmedString `xml:"policy-tcp-options-syn-check"`
+		SequenceCheck TrimmedString `xml:"policy-tcp-options-sequence-check"`
 	} `xml:"policy-action>policy-tcp-options"`
 }
 
@@ -440,6 +457,186 @@ var (
 	}
 )
 
+func scalarValue(v reflect.Value) any {
+	return v.Interface()
+}
+
+func (v *Views) String() string {
+	if v == nil {
+		return "<nil>"
+	}
+
+	rv := reflect.ValueOf(v).Elem()
+	for i := 0; i < rv.NumField(); i++ {
+		f := rv.Field(i)
+		if !f.IsZero() {
+			var b strings.Builder
+			formatValue(&b, f, 0)
+			return b.String()
+		}
+	}
+	return ""
+}
+
+func formatValue(b *strings.Builder, v reflect.Value, indent int) {
+	// Invalid value: nothing to do
+	if !v.IsValid() {
+		return
+	}
+
+	// Unwrap pointers
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return
+		}
+		v = v.Elem()
+	}
+
+	prefix := strings.Repeat("  ", indent)
+
+	switch v.Kind() {
+
+	case reflect.Struct:
+		t := v.Type()
+
+		for i := 0; i < v.NumField(); i++ {
+			f := v.Field(i)
+			ft := t.Field(i)
+
+			if ft.PkgPath != "" || f.IsZero() {
+				continue
+			}
+
+			name := normalizeName(fieldName(ft))
+
+			if isScalar(f) {
+				fmt.Fprintf(
+					b,
+					"%s%s: %v\n",
+					prefix,
+					name,
+					scalarValue(f),
+				)
+				continue
+			}
+
+			fmt.Fprintf(b, "%s%s:\n", prefix, name)
+			formatValue(b, f, indent+1)
+		}
+
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			elem := v.Index(i)
+
+			for elem.Kind() == reflect.Pointer {
+				if elem.IsNil() {
+					break
+				}
+				elem = elem.Elem()
+			}
+
+			if isScalar(elem) {
+				fmt.Fprintf(
+					b,
+					"%s- %v\n",
+					prefix,
+					scalarValue(elem),
+				)
+				continue
+			}
+
+			if elem.Kind() == reflect.Struct {
+				t := elem.Type()
+				firstPrinted := false
+
+				for j := 0; j < elem.NumField(); j++ {
+					f := elem.Field(j)
+					ft := t.Field(j)
+
+					if ft.PkgPath != "" || f.IsZero() {
+						continue
+					}
+
+					name := normalizeName(fieldName(ft))
+
+					if !firstPrinted && isScalar(f) {
+						fmt.Fprintf(
+							b,
+							"%s- %s: %v\n",
+							prefix,
+							name,
+							scalarValue(f),
+						)
+						firstPrinted = true
+						continue
+					}
+
+					if !firstPrinted {
+						fmt.Fprintf(b, "%s-\n", prefix)
+						firstPrinted = true
+					}
+
+					if isScalar(f) {
+						fmt.Fprintf(
+							b,
+							"%s  %s: %v\n",
+							prefix,
+							name,
+							scalarValue(f),
+						)
+						continue
+					}
+
+					fmt.Fprintf(b, "%s  %s:\n", prefix, name)
+					formatValue(b, f, indent+2)
+				}
+
+				continue
+			}
+
+			fmt.Fprintf(b, "%s-\n", prefix)
+			formatValue(b, elem, indent+1)
+		}
+
+	default:
+		if isScalar(v) {
+			fmt.Fprintf(
+				b,
+				"%s%v\n",
+				prefix,
+				scalarValue(v),
+			)
+		}
+	}
+}
+
+func normalizeName(name string) string {
+	return strings.ReplaceAll(name, ">", ".")
+}
+
+func fieldName(f reflect.StructField) string {
+	if tag := f.Tag.Get("xml"); tag != "" {
+		name := strings.Split(tag, ",")[0]
+		if name != "" && name != "-" {
+			return name
+		}
+	}
+	return f.Name
+}
+
+func isScalar(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.String,
+		reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	default:
+		return false
+	}
+}
+
 func validatePlatform(j *Junos, v string) error {
 	switch v {
 	case "ethernetswitch":
@@ -455,269 +652,206 @@ func validatePlatform(j *Junos, v string) error {
 	return nil
 }
 
-// View gathers information on the device given the "view" specified. These views can be interrated/looped over to view the
-// data (i.e. ARP table entries, interface details/statistics, routing tables, etc.). Supported views are:
-//
-// arp, route, bgp, interface, vlan, ethernetswitch, inventory, virtualchassis, staticnat, sourcenat, storage, fireawllpolicy
-//
-// By default, the interface view will return all interfaces on the device. If you wish to only see a particular physical interface,
-// and all logical interfaces underneath it, you can use the option parameter to specify the name of the interface, e.g.:
-//
-// View("interface", "ge-0/0/0")
 func (j *Junos) View(view string, option ...string) (*Views, error) {
 	var results Views
-	var reply *netconf.RPCReply
+	var reply *netconf.Reply
 	var err error
 
-	if strings.Contains(j.Platform[0].Model, "SRX") || strings.Contains(j.Platform[0].Model, "MX") {
-		err := validatePlatform(j, view)
+	if j == nil || j.Session == nil {
+		return nil, errors.New("attempt to call View on nil Junos object")
+	}
 
-		if err != nil {
+	if strings.Contains(j.Platform[0].Model, "SRX") || strings.Contains(j.Platform[0].Model, "MX") {
+		if err := validatePlatform(j, view); err != nil {
 			return nil, err
 		}
 	}
 
+	ctx := context.Background()
+
 	if view == "interface" && len(option) > 0 {
-		rpcIntName := fmt.Sprintf("<get-interface-information><interface-name>%s</interface-name></get-interface-information>", option[0])
-		reply, err = j.Session.Exec(netconf.RawMethod(rpcIntName))
+		rpcIntName := fmt.Sprintf(
+			"<get-interface-information><interface-name>%s</interface-name></get-interface-information>",
+			option[0],
+		)
+		reply, err = j.Session.Do(ctx, rpcIntName)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		reply, err = j.Session.Exec(netconf.RawMethod(viewCategories[view]))
+		rpc, ok := viewCategories[view]
+		if !ok {
+			return nil, errors.New("unsupported view")
+		}
+
+		reply, err = j.Session.Do(ctx, rpc)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	if reply.Errors != nil {
-		for _, m := range reply.Errors {
-			return nil, errors.New(m.Message)
-		}
+	if len(reply.Errors) > 0 {
+		return nil, errors.New(reply.Errors[0].Message)
 	}
 
-	if reply.Data == "" {
+	if len(reply.Body) == 0 {
 		return nil, errors.New("no output available - please check the syntax of your command")
 	}
 
+	data := reply.Body
+
 	switch view {
+
 	case "arp":
 		var arpTable ArpTable
-		formatted := strings.Replace(reply.Data, "\n", "", -1)
-
-		if err := xml.Unmarshal([]byte(formatted), &arpTable); err != nil {
+		if err := xml.Unmarshal(data, &arpTable); err != nil {
 			return nil, err
 		}
-
 		results.Arp = arpTable
+
 	case "route":
 		var routingTable RoutingTable
-		formatted := strings.Replace(reply.Data, "\n", "", -1)
-
-		if err := xml.Unmarshal([]byte(formatted), &routingTable); err != nil {
+		if err := xml.Unmarshal(data, &routingTable); err != nil {
 			return nil, err
 		}
-
 		results.Route = routingTable
+
 	case "interface":
 		var ints Interfaces
-		formatted := strings.Replace(reply.Data, "\n", "", -1)
-
-		if err := xml.Unmarshal([]byte(formatted), &ints); err != nil {
+		if err := xml.Unmarshal(data, &ints); err != nil {
 			return nil, err
 		}
-
 		results.Interface = ints
+
 	case "vlan":
 		var vlan Vlans
-		formatted := strings.Replace(reply.Data, "\n", "", -1)
-
-		if err := xml.Unmarshal([]byte(formatted), &vlan); err != nil {
+		if err := xml.Unmarshal(data, &vlan); err != nil {
 			return nil, err
 		}
-
 		results.Vlan = vlan
 
 	case "lldp":
 		var lldpNeighbors LLDPNeighbors
-		formatted := strings.Replace(reply.Data, "\n", "", -1)
-
-		if err := xml.Unmarshal([]byte(formatted), &lldpNeighbors); err != nil {
+		if err := xml.Unmarshal(data, &lldpNeighbors); err != nil {
 			return nil, err
 		}
-
 		results.LLDPNeighbors = lldpNeighbors
+
 	case "ethernetswitch":
 		var ethtable EthernetSwitchingTable
-		formatted := strings.Replace(reply.Data, "\n", "", -1)
-
-		if err := xml.Unmarshal([]byte(formatted), &ethtable); err != nil {
+		if err := xml.Unmarshal(data, &ethtable); err != nil {
 			return nil, err
 		}
-
 		results.EthernetSwitch = ethtable
+
 	case "inventory":
 		var inventory HardwareInventory
-		formatted := strings.Replace(reply.Data, "\n", "", -1)
 
-		if strings.Contains(reply.Data, "multi-routing-engine-results") {
+		if strings.Contains(string(data), "multi-routing-engine-results") {
 			var srxinventory srxHardwareInventory
-
-			if err := xml.Unmarshal([]byte(formatted), &srxinventory); err != nil {
+			if err := xml.Unmarshal(data, &srxinventory); err != nil {
 				return nil, err
 			}
-
-			for _, c := range srxinventory.Chassis {
-				inventory.Chassis = append(inventory.Chassis, c)
-			}
-
-			results.Inventory = inventory
+			inventory.Chassis = append(inventory.Chassis, srxinventory.Chassis...)
 		} else {
-			if err := xml.Unmarshal([]byte(formatted), &inventory); err != nil {
+			if err := xml.Unmarshal(data, &inventory); err != nil {
 				return nil, err
 			}
-
-			results.Inventory = inventory
 		}
+
+		results.Inventory = inventory
+
 	case "virtualchassis":
 		var vc VirtualChassis
-		formatted := strings.Replace(reply.Data, "\n", "", -1)
-
-		if err := xml.Unmarshal([]byte(formatted), &vc); err != nil {
+		if err := xml.Unmarshal(data, &vc); err != nil {
 			return nil, err
 		}
-
 		results.VirtualChassis = vc
+
 	case "bgp":
 		var bgpTable BGPTable
-		formatted := strings.Replace(reply.Data, "\n", "", -1)
-
-		if err := xml.Unmarshal([]byte(formatted), &bgpTable); err != nil {
+		if err := xml.Unmarshal(data, &bgpTable); err != nil {
 			return nil, err
 		}
-
 		results.BGP = bgpTable
+
 	case "staticnat":
 		var staticnats StaticNats
-		formatted := strings.Replace(reply.Data, "\n", "", -1)
 
-		if strings.Contains(reply.Data, "multi-routing-engine-results") {
+		if strings.Contains(string(data), "multi-routing-engine-results") {
 			var srxstaticnats srxStaticNats
-
-			if err := xml.Unmarshal([]byte(formatted), &srxstaticnats); err != nil {
+			if err := xml.Unmarshal(data, &srxstaticnats); err != nil {
 				return nil, err
 			}
 
 			actualrules := len(srxstaticnats.Entries) / 2
 			staticnats.Count = actualrules
-
-			for i, c := range srxstaticnats.Entries {
-				if i < actualrules {
-					staticnats.Entries = append(staticnats.Entries, c)
-				}
-
-				i++
-			}
-
-			results.StaticNat = staticnats
+			staticnats.Entries = append(staticnats.Entries, srxstaticnats.Entries[:actualrules]...)
 		} else {
-			var staticnatentry StaticNatEntry
-			if err := xml.Unmarshal([]byte(formatted), &staticnats); err != nil {
+			if err := xml.Unmarshal(data, &staticnats); err != nil {
 				return nil, err
 			}
-
-			actualrules := len(staticnats.Entries)
-			staticnats.Count = actualrules
-
-			staticnats.Entries = append(staticnats.Entries, staticnatentry)
-
-			results.StaticNat = staticnats
+			staticnats.Count = len(staticnats.Entries)
 		}
+
+		results.StaticNat = staticnats
+
 	case "sourcenat":
 		var sourcenats SourceNats
-		formatted := strings.Replace(reply.Data, "\n", "", -1)
 
-		if strings.Contains(reply.Data, "multi-routing-engine-results") {
+		if strings.Contains(string(data), "multi-routing-engine-results") {
 			var srxsourcenats srxSourceNats
-
-			if err := xml.Unmarshal([]byte(formatted), &srxsourcenats); err != nil {
+			if err := xml.Unmarshal(data, &srxsourcenats); err != nil {
 				return nil, err
 			}
 
 			actualrules := len(srxsourcenats.Entries) / 2
 			sourcenats.Count = actualrules
-
-			for i, c := range srxsourcenats.Entries {
-				if i < actualrules {
-					sourcenats.Entries = append(sourcenats.Entries, c)
-				}
-
-				i++
-			}
-
-			results.SourceNat = sourcenats
+			sourcenats.Entries = append(sourcenats.Entries, srxsourcenats.Entries[:actualrules]...)
 		} else {
-			var sourcenatentry SourceNatEntry
-			if err := xml.Unmarshal([]byte(formatted), &sourcenats); err != nil {
+			if err := xml.Unmarshal(data, &sourcenats); err != nil {
 				return nil, err
 			}
-
-			actualrules := len(sourcenats.Entries)
-			sourcenats.Count = actualrules
-
-			sourcenats.Entries = append(sourcenats.Entries, sourcenatentry)
-
-			results.SourceNat = sourcenats
+			sourcenats.Count = len(sourcenats.Entries)
 		}
+
+		results.SourceNat = sourcenats
+
 	case "storage":
 		var storage Storage
-		formatted := strings.Replace(reply.Data, "\n", "", -1)
 
-		if strings.Contains(reply.Data, "multi-routing-engine-results") {
+		if strings.Contains(string(data), "multi-routing-engine-results") {
 			var multistorage multiStorage
-
-			if err := xml.Unmarshal([]byte(formatted), &multistorage); err != nil {
+			if err := xml.Unmarshal(data, &multistorage); err != nil {
 				return nil, err
 			}
-
-			for _, s := range multistorage.Entries {
-				storage.Entries = append(storage.Entries, s)
-			}
-
-			results.Storage = storage
+			storage.Entries = append(storage.Entries, multistorage.Entries...)
 		} else {
 			var sysstorage SystemStorage
-			if err := xml.Unmarshal([]byte(formatted), &sysstorage); err != nil {
+			if err := xml.Unmarshal(data, &sysstorage); err != nil {
 				return nil, err
 			}
-
 			storage.Entries = append(storage.Entries, sysstorage)
-
-			results.Storage = storage
 		}
+
+		results.Storage = storage
+
 	case "firewallpolicy":
 		var fwpolicy FirewallPolicy
-		formatted := strings.Replace(reply.Data, "\n", "", -1)
 
-		if strings.Contains(reply.Data, "multi-routing-engine-results") {
+		if strings.Contains(string(data), "multi-routing-engine-results") {
 			var multifwpolicy srxFirewallPolicy
-
-			if err := xml.Unmarshal([]byte(formatted), &multifwpolicy); err != nil {
+			if err := xml.Unmarshal(data, &multifwpolicy); err != nil {
 				return nil, err
 			}
-
-			for _, s := range multifwpolicy.Entries {
-				fwpolicy.Entries = append(fwpolicy.Entries, s)
-			}
-
-			results.FirewallPolicy = fwpolicy
+			fwpolicy.Entries = append(fwpolicy.Entries, multifwpolicy.Entries...)
 		} else {
-			if err := xml.Unmarshal([]byte(formatted), &fwpolicy); err != nil {
+			if err := xml.Unmarshal(data, &fwpolicy); err != nil {
 				return nil, err
 			}
-
-			results.FirewallPolicy = fwpolicy
 		}
+
+		results.FirewallPolicy = fwpolicy
 	}
 
 	return &results, nil

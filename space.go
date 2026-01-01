@@ -1,53 +1,103 @@
 package junos
 
-// All of our HTTP Content-Types we use.
-var (
-	contentDiscoverDevices = "application/vnd.net.juniper.space.device-management.discover-devices+xml;version=2;charset=UTF-8"
-	contentExecDeploy      = "application/vnd.net.juniper.space.software-management.exec-deploy+xml;version=1;charset=UTF-8"
-	contentExecRemove      = "application/vnd.net.juniper.space.software-management.exec-remove+xml;version=1;charset=UTF-8"
-	contentExecStage       = "application/vnd.net.juniper.space.software-management.exec-stage+xml;version=1;charset=UTF-8"
-	contentAddress         = "application/vnd.juniper.sd.address-management.address+xml;version=1;charset=UTF-8"
-	contentUpdateDevices   = "application/vnd.juniper.sd.device-management.update-devices+xml;version=1;charset=UTF-8"
-	contentPublish         = "application/vnd.juniper.sd.fwpolicy-management.publish+xml;version=1;charset=UTF-8"
-	contentAddressPatch    = "application/vnd.juniper.sd.address-management.address_patch+xml;version=1;charset=UTF-8"
-	contentService         = "application/vnd.juniper.sd.service-management.service+xml;version=1;charset=UTF-8"
-	contentServicePatch    = "application/vnd.juniper.sd.service-management.service_patch+xml;version=1;charset=UTF-8"
-	contentVariable        = "application/vnd.juniper.sd.variable-management.variable-definition+xml;version=1;charset=UTF-8"
-	contentResync          = "application/vnd.net.juniper.space.device-management.exec-resync+xml;version=1"
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
 )
 
-// Space contains our session state.
+// Space represents a Junos Space API client.
 type Space struct {
 	Host     string
 	User     string
 	Password string
+
+	client *http.Client
 }
 
-// APIRequest builds our request before sending it to the server.
-type APIRequest struct {
-	Method      string
-	URL         string
-	Body        string
-	ContentType string
-}
-
-type jobID struct {
-	ID int `xml:"id"`
-}
-
-type jobDetail struct {
-	ID      jobID
-	Name    string  `xml:"name"`
-	State   string  `xml:"job-state"`
-	Status  string  `xml:"job-status"`
-	Percent float64 `xml:"percent-complete"`
-}
-
-// NewServer sets up our connection to the Junos Space server.
-func NewServer(host, user, passwd string) *Space {
+// NewSpace creates a new Junos Space client.
+func NewSpace(host, user, password string) *Space {
 	return &Space{
 		Host:     host,
 		User:     user,
-		Password: passwd,
+		Password: password,
+		client: &http.Client{
+			Timeout: 60 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: true,
+				},
+			},
+		},
 	}
+}
+
+func (s *Space) doRequest(
+	ctx context.Context,
+	method string,
+	path string,
+	body []byte,
+	headers map[string]string,
+	query map[string]string,
+) ([]byte, error) {
+
+	url := fmt.Sprintf("https://%s%s", s.Host, path)
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		method,
+		url,
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(query) > 0 {
+		q := req.URL.Query()
+		for k, v := range query {
+			q.Set(k, v)
+		}
+		req.URL.RawQuery = q.Encode()
+	}
+
+	req.SetBasicAuth(s.User, s.Password)
+
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf(
+			"space API error: status=%d body=%s",
+			resp.StatusCode,
+			string(respBody),
+		)
+	}
+
+	return respBody, nil
+}
+
+func (s *Space) newRequest(
+	method, path string,
+	body []byte,
+	headers map[string]string,
+	query map[string]string,
+) ([]byte, error) {
+	return s.doRequest(context.Background(), method, path, body, headers, query)
 }

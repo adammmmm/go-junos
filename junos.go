@@ -3,18 +3,19 @@
 package junos
 
 import (
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"io/ioutil"
-	"net"
+	"os"
 	"regexp"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/Juniper/go-netconf/netconf"
+	"github.com/nemith/netconf"
+	ncssh "github.com/nemith/netconf/transport/ssh"
 )
 
 // All of our RPC calls we use.
@@ -27,8 +28,6 @@ var (
 	rpcCommitCheck         = "<commit-configuration><check/></commit-configuration>"
 	rpcCommitConfirm       = "<commit-configuration><confirmed/><confirm-timeout>%d</confirm-timeout></commit-configuration>"
 	rpcCommitFull          = "<commit-configuration><full/></commit-configuration>"
-	rpcFactsRE             = "<get-route-engine-information/>"
-	rpcFactsChassis        = "<get-chassis-inventory/>"
 	rpcConfigFileSet       = "<load-configuration action=\"set\" format=\"text\"><configuration-set>%s</configuration-set></load-configuration>"
 	rpcConfigFileText      = "<load-configuration format=\"text\"><configuration-text>%s</configuration-text></load-configuration>"
 	rpcConfigFileXML       = "<load-configuration format=\"xml\"><configuration>%s</configuration></load-configuration>"
@@ -38,24 +37,14 @@ var (
 	rpcConfigStringSet     = "<load-configuration action=\"set\" format=\"text\"><configuration-set>%s</configuration-set></load-configuration>"
 	rpcConfigStringText    = "<load-configuration action=\"replace\" format=\"text\"><configuration-text>%s</configuration-text></load-configuration>"
 	rpcConfigStringXML     = "<load-configuration format=\"xml\"><configuration>%s</configuration></load-configuration>"
-	rpcGetRescue           = "<get-rescue-information><format>text</format></get-rescue-information>"
-	rpcGetRollback         = "<get-rollback-information><rollback>%d</rollback><format>text</format></get-rollback-information>"
-	rpcGetRollbackCompare  = "<get-rollback-information><rollback>0</rollback><compare>%d</compare><format>text</format></get-rollback-information>"
 	rpcGetCandidateCompare = "<get-configuration compare=\"rollback\" rollback=\"%d\" format=\"text\"/>"
-	rpcHardware            = "<get-chassis-inventory/>"
-	rpcLock                = "<lock-configuration/>"
 	rpcRescueConfig        = "<load-configuration rescue=\"rescue\"/>"
 	rpcRescueDelete        = "<request-delete-rescue-configuration/>"
 	rpcRescueSave          = "<request-save-rescue-configuration/>"
 	rpcRollbackConfig      = "<load-configuration rollback=\"%d\"/>"
-	rpcRoute               = "<get-route-engine-information/>"
-	rpcSoftware            = "<get-software-information/>"
-	rpcUnlock              = "<unlock-configuration/>"
 	rpcVersion             = "<get-software-information/>"
 	rpcReboot              = "<request-reboot/>"
 	rpcCommitHistory       = "<get-commit-information/>"
-	rpcFileList            = "<file-list><detail/><path>%s</path></file-list>"
-	rpcInterfaces          = "<get-interface-information/>"
 )
 
 // Junos contains our session state.
@@ -122,10 +111,8 @@ type commitResults struct {
 	Errors  []commitError `xml:"rpc-error"`
 }
 
-type diffXML struct {
-	XMLName xml.Name `xml:"rollback-information"`
-	Error   string   `xml:"rpc-error>error-message"`
-	Config  string   `xml:"configuration-information>configuration-output"`
+type NetconfOK struct {
+	XMLName xml.Name `xml:"ok"`
 }
 
 // cdiffXML - candidate config diff XML
@@ -133,17 +120,6 @@ type cdiffXML struct {
 	XMLName xml.Name `xml:"configuration-information"`
 	Error   string   `xml:"rpc-error>error-message"`
 	Config  string   `xml:"configuration-output"`
-}
-
-type hardwareRouteEngines struct {
-	XMLName xml.Name              `xml:"multi-routing-engine-results"`
-	RE      []hardwareRouteEngine `xml:"multi-routing-engine-item>chassis-inventory"`
-}
-
-type hardwareRouteEngine struct {
-	XMLName     xml.Name `xml:"chassis-inventory"`
-	Serial      string   `xml:"chassis>serial-number"`
-	Description string   `xml:"chassis>description"`
 }
 
 type versionRouteEngines struct {
@@ -164,30 +140,93 @@ type versionPackageInfo struct {
 	SoftwareVersion []string `xml:"comment"`
 }
 
+func decodeCommitReply(data []byte) error {
+	// Case 1: commit-results
+	var cr commitResults
+	if err := xml.Unmarshal(data, &cr); err == nil && cr.XMLName.Local == "commit-results" {
+		return nil
+	}
+
+	// Case 2: simple <ok/>
+	var ok NetconfOK
+	if err := xml.Unmarshal(data, &ok); err == nil && ok.XMLName.Local == "ok" {
+		return nil
+	}
+
+	// Otherwise: unknown response
+	return fmt.Errorf("unexpected commit response: %s", strings.TrimSpace(string(data)))
+}
+
 // genSSHClientConfig is a wrapper function based around the auth method defined
 // (user/password or private key) which returns the SSH client configuration used to
 // connect.
+// genSSHClientConfig creates an ssh.ClientConfig for password or key-based auth
 func genSSHClientConfig(auth *AuthMethod) (*ssh.ClientConfig, error) {
-	var config *ssh.ClientConfig
-
-	if len(auth.Credentials) > 0 {
-		config = netconf.SSHConfigPassword(auth.Credentials[0], auth.Credentials[1])
-
-		return config, nil
+	if auth == nil {
+		return nil, errors.New("auth method is nil")
 	}
 
-	if len(auth.PrivateKey) > 0 {
-		config, err := netconf.SSHConfigPubKeyFile(auth.Username, auth.PrivateKey, auth.Passphrase)
+	cfg := &ssh.ClientConfig{
+		Timeout:         120 * time.Second,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
+
+	// Username resolution (CRITICAL FIX)
+	if auth.Username != "" {
+		cfg.User = auth.Username
+	} else if len(auth.Credentials) == 2 {
+		cfg.User = auth.Credentials[0]
+	} else {
+		return nil, errors.New("no username provided")
+	}
+
+	// Password authentication
+	if len(auth.Credentials) == 2 {
+		password := auth.Credentials[1]
+		cfg.Auth = []ssh.AuthMethod{
+			ssh.KeyboardInteractive(
+				func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+					answers := make([]string, len(questions))
+					for i := range questions {
+						answers[i] = password
+					}
+					return answers, nil
+				},
+			),
+			ssh.Password(password),
+		}
+		return cfg, nil
+	}
+
+	// Private key authentication
+	if auth.PrivateKey != "" {
+		key, err := os.ReadFile(auth.PrivateKey)
 		if err != nil {
-			return config, err
+			return nil, err
 		}
 
-		config.HostKeyCallback = ssh.InsecureIgnoreHostKey()
+		var signer ssh.Signer
+		if auth.Passphrase != "" {
+			signer, err = ssh.ParsePrivateKeyWithPassphrase(
+				key,
+				[]byte(auth.Passphrase),
+			)
+		} else {
+			signer, err = ssh.ParsePrivateKey(key)
+		}
 
-		return config, nil
+		if err != nil {
+			return nil, err
+		}
+
+		cfg.Auth = []ssh.AuthMethod{
+			ssh.PublicKeys(signer),
+		}
+
+		return cfg, nil
 	}
 
-	return config, errors.New("no credentials/keys available")
+	return nil, errors.New("no authentication method provided")
 }
 
 // NewSession establishes a new connection to a Junos device that we will use
@@ -204,6 +243,13 @@ func NewSession(host string, auth *AuthMethod) (*Junos, error) {
 	if err != nil {
 		return nil, err
 	}
+	if host == "" {
+		return nil, errors.New("host is empty")
+	}
+
+	if !strings.Contains(host, ":") {
+		host += ":22"
+	}
 
 	return NewSessionWithConfig(host, clientConfig)
 }
@@ -214,26 +260,20 @@ func NewSession(host string, auth *AuthMethod) (*Junos, error) {
 // This is especially useful if you need to customize the SSH connection beyond
 // what's supported in NewSession().
 func NewSessionWithConfig(host string, clientConfig *ssh.ClientConfig) (*Junos, error) {
-	s, err := netconf.DialSSH(host, clientConfig)
+	ctx, cancel := context.WithTimeout(context.Background(), clientConfig.Timeout)
+	defer cancel()
+
+	transport, err := ncssh.Dial(ctx, "tcp", host, clientConfig)
 	if err != nil {
-		return nil, errors.New(fmt.Sprintf("error connecting to %s - %s", host, err))
+		return nil, fmt.Errorf("error connecting to %s - %s", host, err)
 	}
 
-	return NewSessionFromNetconf(s)
-}
-
-// NewSessionFromNetConn uses an existing net.Conn to establish a netconf.Session
-//
-// This is especially useful if you need to customize the SSH connection beyond
-// what's supported in NewSession().
-func NewSessionFromNetConn(host string, nc net.Conn, clientConfig *ssh.ClientConfig) (*Junos, error) {
-	s, err := netconf.NewSSHSession(nc, clientConfig)
-
+	sess, err := netconf.Open(transport)
 	if err != nil {
-		return nil, errors.New(fmt.Sprintf("error connecting to %s - %s", host, err))
+		return nil, fmt.Errorf("error setting up session to %s - %s", host, err)
 	}
 
-	return NewSessionFromNetconf(s)
+	return NewSessionFromNetconf(sess)
 }
 
 // NewSessionFromNetconf uses an existing netconf.Session to run our commands against
@@ -248,51 +288,59 @@ func NewSessionFromNetconf(s *netconf.Session) (*Junos, error) {
 	return j, j.GatherFacts()
 }
 
-// GatherFacts gathers basic information about the device.
-//
-// It's automatically called when using the provided NewSession* functions, but can be
-// used if you create your own Junos sessions.
 func (j *Junos) GatherFacts() error {
 	if j == nil {
 		return errors.New("attempt to call GatherFacts on nil Junos object")
 	}
+
 	s := j.Session
 	rex := regexp.MustCompile(`^.*\[(.*)\]`)
+	ctx := context.Background()
 
-	reply, err := s.Exec(netconf.RawMethod(rpcVersion))
+	// Junos vendor-specific RPC
+	reply, err := s.Do(ctx, rpcVersion)
 	if err != nil {
 		return err
 	}
 
-	if reply.Errors != nil {
-		for _, m := range reply.Errors {
-			return errors.New(m.Message)
-		}
+	if len(reply.Errors) > 0 {
+		return errors.New(reply.Errors[0].Message)
 	}
 
-	formatted := strings.Replace(reply.Data, "\n", "", -1)
+	formatted := strings.ReplaceAll(string(reply.Body), "\n", "")
 
-	if strings.Contains(reply.Data, "multi-routing-engine-results") {
+	// Multi-routing-engine devices
+	if strings.Contains(formatted, "multi-routing-engine-results") {
 		var facts versionRouteEngines
-		err = xml.Unmarshal([]byte(formatted), &facts)
-		if err != nil {
+		if err := xml.Unmarshal([]byte(formatted), &facts); err != nil {
 			return err
 		}
 
 		numRE := len(facts.RE)
+		if numRE == 0 {
+			return errors.New("no routing engines found")
+		}
+
 		hostname := facts.RE[0].Hostname
 		res := make([]RoutingEngine, 0, numRE)
 
 		for i := 0; i < numRE; i++ {
-			version := rex.FindStringSubmatch(facts.RE[i].PackageInfo[0].SoftwareVersion[0])
+			version := rex.FindStringSubmatch(
+				facts.RE[i].PackageInfo[0].SoftwareVersion[0],
+			)
 			model := strings.ToUpper(facts.RE[i].Platform)
 
 			switch len(version) {
 			case 1:
-				res = append(res, RoutingEngine{Model: model, Version: version[0]})
+				res = append(res, RoutingEngine{
+					Model:   model,
+					Version: version[0],
+				})
 			case 2:
-				res = append(res, RoutingEngine{Model: model, Version: version[1]})
-			default:
+				res = append(res, RoutingEngine{
+					Model:   model,
+					Version: version[1],
+				})
 			}
 		}
 
@@ -303,34 +351,62 @@ func (j *Junos) GatherFacts() error {
 		return nil
 	}
 
+	// Single routing engine
 	var facts versionRouteEngine
-	err = xml.Unmarshal([]byte(formatted), &facts)
-	if err != nil {
+	if err := xml.Unmarshal([]byte(formatted), &facts); err != nil {
 		return err
 	}
 
-	// res := make([]RoutingEngine, 0)
-	var res []RoutingEngine
-	hostname := facts.Hostname
-	version := rex.FindStringSubmatch(facts.PackageInfo[0].SoftwareVersion[0])
-	model := strings.ToUpper(facts.Platform)
-	res = append(res, RoutingEngine{Model: model, Version: version[1]})
+	version := rex.FindStringSubmatch(
+		facts.PackageInfo[0].SoftwareVersion[0],
+	)
 
-	j.Hostname = hostname
+	j.Hostname = facts.Hostname
 	j.RoutingEngines = 1
-	j.Platform = res
+	j.Platform = []RoutingEngine{
+		{
+			Model:   strings.ToUpper(facts.Platform),
+			Version: version[1],
+		},
+	}
 	j.CommitTimeout = 0
+
 	return nil
 }
 
-// Close disconnects our session to the device.
-func (j *Junos) Close() {
-	j.Session.Transport.Close()
+func (j *Junos) CommandText(cmd string) (string, error) {
+	out, err := j.Command(cmd)
+	if err != nil {
+		return "", err
+	}
+
+	type result struct {
+		Output string `xml:",innerxml"`
+	}
+
+	var r result
+	if err := xml.Unmarshal([]byte(out), &r); err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(r.Output), nil
 }
 
-// Command executes any operational mode command, such as "show" or "request." If you wish to return the results
-// of the command, specify the format, which must be "text" or "xml" as the second parameter (optional).
+func (j *Junos) Close() error {
+	if j == nil || j.Session == nil {
+		return nil
+	}
+	return j.Session.Close(context.Background())
+}
+
+// Command executes any operational mode command, such as "show" or "request".
+// If you wish to return the results of the command, specify the format,
+// which must be "text" or "xml" as the second parameter (optional).
 func (j *Junos) Command(cmd string, format ...string) (string, error) {
+	if j == nil {
+		return "", errors.New("attempt to call Command on nil Junos object")
+	}
+
 	var command string
 	command = fmt.Sprintf(rpcCommand, cmd)
 
@@ -338,85 +414,100 @@ func (j *Junos) Command(cmd string, format ...string) (string, error) {
 		command = fmt.Sprintf(rpcCommandXML, cmd)
 	}
 
-	reply, err := j.Session.Exec(netconf.RawMethod(command))
+	ctx := context.Background()
+
+	reply, err := j.Session.Do(ctx, command)
 	if err != nil {
 		return "", err
 	}
 
-	if reply.Errors != nil {
-		for _, m := range reply.Errors {
-			return "", errors.New(m.Message)
-		}
+	if len(reply.Errors) > 0 {
+		return "", errors.New(reply.Errors[0].Message)
 	}
 
-	if reply.Data == "" {
+	if len(reply.Body) == 0 {
 		return "", errors.New("no output available - please check the syntax of your command")
 	}
 
+	// Text output requires unwrapping XML
 	if len(format) > 0 && format[0] == "text" {
 		var output commandXML
-		err = xml.Unmarshal([]byte(reply.Data), &output)
-		if err != nil {
+		if err := xml.Unmarshal(reply.Body, &output); err != nil {
 			return "", err
 		}
 
 		return output.Config, nil
 	}
 
-	return reply.Data, nil
+	// XML output (or default)
+	return string(reply.Body), nil
 }
 
 // CommitHistory gathers all the information about the previous 5 commits.
 func (j *Junos) CommitHistory() (*CommitHistory, error) {
+	if j == nil || j.Session == nil {
+		return nil, errors.New("attempt to call CommitHistory on nil Junos object")
+	}
+
 	var history CommitHistory
-	reply, err := j.Session.Exec(netconf.RawMethod(rpcCommitHistory))
+	ctx := context.Background()
+
+	reply, err := j.Session.Do(ctx, rpcCommitHistory)
 	if err != nil {
 		return nil, err
 	}
 
-	if reply.Errors != nil {
-		for _, m := range reply.Errors {
-			return nil, errors.New(m.Message)
-		}
+	if len(reply.Errors) > 0 {
+		return nil, errors.New(reply.Errors[0].Message)
 	}
 
-	if reply.Data == "" {
+	if len(reply.Body) == 0 {
 		return nil, errors.New("could not load commit history")
 	}
 
-	formatted := strings.Replace(reply.Data, "\n", "", -1)
-	err = xml.Unmarshal([]byte(formatted), &history)
-	if err != nil {
+	formatted := strings.ReplaceAll(string(reply.Body), "\n", "")
+	if err := xml.Unmarshal([]byte(formatted), &history); err != nil {
 		return nil, err
 	}
 
 	return &history, nil
 }
 
+func (c CommitHistory) String() string {
+	var b strings.Builder
+	for _, e := range c.Entries {
+		fmt.Fprintf(
+			&b,
+			"#%d %-8s %-8s %-24s %s\n",
+			e.Sequence,
+			e.User,
+			e.Method,
+			e.Timestamp,
+			e.Comment,
+		)
+	}
+	return b.String()
+}
+
 // Commit commits the configuration.
 func (j *Junos) Commit() error {
-	var errs commitResults
-	reply, err := j.Session.Exec(netconf.RawMethod(rpcCommit))
+	if j == nil || j.Session == nil {
+		return errors.New("attempt to call Commit on nil Junos object")
+	}
+
+	ctx := context.Background()
+
+	reply, err := j.Session.Do(ctx, rpcCommit)
 	if err != nil {
 		return err
 	}
 
-	if reply.Errors != nil {
-		for _, m := range reply.Errors {
-			return errors.New(m.Message)
-		}
+	if len(reply.Errors) > 0 {
+		return errors.New(reply.Errors[0].Message)
 	}
 
-	formatted := strings.Replace(reply.Data, "\n", "", -1)
-	err = xml.Unmarshal([]byte(formatted), &errs)
-	if err != nil {
+	if err := decodeCommitReply(reply.Body); err != nil {
 		return err
-	}
-
-	if errs.Errors != nil {
-		for _, m := range errs.Errors {
-			return errors.New(strings.Trim(m.Message, "[\r\n]"))
-		}
 	}
 
 	if j.CommitTimeout > 0 {
@@ -426,141 +517,113 @@ func (j *Junos) Commit() error {
 	return nil
 }
 
-// CommitAt commits the configuration at the specified time. Time must be in 24-hour HH:mm format.
-// Specifying a commit message is optional.
-func (j *Junos) CommitAt(time string, message ...string) error {
-	var errs commitResults
-	command := fmt.Sprintf(rpcCommitAt, time)
+func (j *Junos) CommitAt(timeStr string, message ...string) error {
+	if j == nil || j.Session == nil {
+		return errors.New("attempt to call CommitAt on nil Junos object")
+	}
 
+	ctx := context.Background()
+
+	command := fmt.Sprintf(rpcCommitAt, timeStr)
 	if len(message) > 0 {
-		command = fmt.Sprintf(rpcCommitAtLog, time, message[0])
+		command = fmt.Sprintf(rpcCommitAtLog, timeStr, message[0])
 	}
 
-	reply, err := j.Session.Exec(netconf.RawMethod(command))
+	reply, err := j.Session.Do(ctx, command)
 	if err != nil {
 		return err
 	}
 
-	if reply.Errors != nil {
-		for _, m := range reply.Errors {
-			return errors.New(m.Message)
-		}
+	if len(reply.Errors) > 0 {
+		return errors.New(reply.Errors[0].Message)
 	}
 
-	formatted := strings.Replace(reply.Data, "\n", "", -1)
-	err = xml.Unmarshal([]byte(formatted), &errs)
-	if err != nil {
-		return err
-	}
-
-	if errs.Errors != nil {
-		for _, m := range errs.Errors {
-			return errors.New(strings.Trim(m.Message, "[\r\n]"))
-		}
-	}
-
-	return nil
+	return decodeCommitReply(reply.Body)
 }
 
-// CommitCheck checks the configuration for syntax errors, but does not commit any changes.
 func (j *Junos) CommitCheck() error {
-	var errs commitResults
-	reply, err := j.Session.Exec(netconf.RawMethod(rpcCommitCheck))
+	if j == nil || j.Session == nil {
+		return errors.New("attempt to call CommitCheck on nil Junos object")
+	}
+
+	ctx := context.Background()
+
+	reply, err := j.Session.Do(ctx, rpcCommitCheck)
 	if err != nil {
 		return err
 	}
 
-	if reply.Errors != nil {
-		for _, m := range reply.Errors {
-			return errors.New(m.Message)
-		}
+	if len(reply.Errors) > 0 {
+		return errors.New(reply.Errors[0].Message)
 	}
 
-	formatted := strings.Replace(reply.Data, "\n", "", -1)
-	err = xml.Unmarshal([]byte(formatted), &errs)
-	if err != nil {
-		return err
-	}
-
-	if errs.Errors != nil {
-		for _, m := range errs.Errors {
-			return errors.New(strings.Trim(m.Message, "[\r\n]"))
-		}
-	}
-
-	return nil
+	return decodeCommitReply(reply.Body)
 }
 
-// CommitConfirm rolls back the configuration after the delayed minutes.
 func (j *Junos) CommitConfirm(delay int) error {
-	var errs commitResults
+	if j == nil || j.Session == nil {
+		return errors.New("attempt to call CommitConfirm on nil Junos object")
+	}
+
+	ctx := context.Background()
 	command := fmt.Sprintf(rpcCommitConfirm, delay)
-	reply, err := j.Session.Exec(netconf.RawMethod(command))
+
+	reply, err := j.Session.Do(ctx, command)
 	if err != nil {
 		return err
 	}
 
-	if reply.Errors != nil {
-		for _, m := range reply.Errors {
-			return errors.New(m.Message)
-		}
+	if len(reply.Errors) > 0 {
+		return errors.New(reply.Errors[0].Message)
 	}
 
-	formatted := strings.Replace(reply.Data, "\n", "", -1)
-	err = xml.Unmarshal([]byte(formatted), &errs)
-	if err != nil {
-		return err
-	}
-
-	if errs.Errors != nil {
-		for _, m := range errs.Errors {
-			message := fmt.Sprintf("[%s]\n    %s\nError: %s", strings.Trim(m.Path, "[\r\n]"), strings.Trim(m.Element, "[\r\n]"), strings.Trim(m.Message, "[\r\n]"))
-			return errors.New(message)
-		}
-	}
-
-	return nil
+	return decodeCommitReply(reply.Body)
 }
 
-// Diff compares candidate config to current (rollback 0) or previous rollback
-// this is equivalent to 'show | compare' or 'show | compare rollback X' when
-// in configuration mode
-// RPC: <get-configuration compare="rollback" rollback="[0-49]" format="text"/>
-// https://goo.gl/wFRMX9 (juniper.net)
+// Diff compares candidate config to current (rollback 0) or previous rollback.
+// This is equivalent to 'show | compare' or 'show | compare rollback X' when
+// in configuration mode.
 func (j *Junos) Diff(rollback int) (string, error) {
+	if j == nil || j.Session == nil {
+		return "", errors.New("attempt to call Diff on nil Junos object")
+	}
+
 	var cd cdiffXML
+	ctx := context.Background()
+
 	command := fmt.Sprintf(rpcGetCandidateCompare, rollback)
-	reply, err := j.Session.Exec(netconf.RawMethod(command))
+
+	reply, err := j.Session.Do(ctx, command)
 	if err != nil {
 		return "", err
 	}
 
-	if reply.Errors != nil {
-		for _, m := range reply.Errors {
-			return "", errors.New(m.Message)
-		}
+	if len(reply.Errors) > 0 {
+		return "", errors.New(reply.Errors[0].Message)
 	}
 
-	// formatted := strings.Replace(reply.Data, "\n", "", -1)
-	err = xml.Unmarshal([]byte(reply.Data), &cd)
-	if err != nil {
+	if err := xml.Unmarshal(reply.Body, &cd); err != nil {
 		return "", err
 	}
 
 	if cd.Error != "" {
-		errMessage := strings.Trim(cd.Error, "\r\n")
-		return "", errors.New(errMessage)
+		return "", errors.New(strings.Trim(cd.Error, "\r\n"))
 	}
 
 	return cd.Config, nil
 }
 
-// GetConfig returns the configuration starting at the given section. If you do not specify anything
-// for section, then the entire configuration will be returned. Format must be "text" or "xml." You
-// can do sub-sections by separating the section path with a ">" symbol, i.e. "system>login" or "protocols>ospf>area."
-// The default option is to return the XML.
+// GetConfig returns the configuration starting at the given section.
+// If section is omitted, the entire configuration is returned.
+// Format must be "text" or "xml".
 func (j *Junos) GetConfig(format string, section ...string) (string, error) {
-	command := fmt.Sprintf("<get-configuration format=\"%s\"><configuration>", format)
+	if j == nil || j.Session == nil {
+		return "", errors.New("attempt to call GetConfig on nil Junos object")
+	}
+
+	ctx := context.Background()
+
+	command := fmt.Sprintf(`<get-configuration format="%s"><configuration>`, format)
 
 	if len(section) > 0 {
 		secs := strings.Split(section[0], ">")
@@ -572,38 +635,34 @@ func (j *Junos) GetConfig(format string, section ...string) (string, error) {
 			}
 			command += fmt.Sprintf("<%s/>", secs[nSecs])
 
-			for j := nSecs - 1; j >= 0; j-- {
-				command += fmt.Sprintf("</%s>", secs[j])
+			for i := nSecs - 1; i >= 0; i-- {
+				command += fmt.Sprintf("</%s>", secs[i])
 			}
-			command += fmt.Sprint("</configuration></get-configuration>")
+			command += "</configuration></get-configuration>"
 		}
-	}
-
-	if len(section) <= 0 {
+	} else {
 		command += "</configuration></get-configuration>"
 	}
 
-	reply, err := j.Session.Exec(netconf.RawMethod(command))
+	reply, err := j.Session.Do(ctx, command)
 	if err != nil {
 		return "", err
 	}
 
-	if len(reply.Data) < 50 {
+	body := reply.Body
+
+	if len(body) < 50 {
 		return "", errors.New("the section you provided is not configured on the device")
 	}
 
-	if reply.Errors != nil {
-		for _, m := range reply.Errors {
-			return "", errors.New(m.Message)
-		}
+	if len(reply.Errors) > 0 {
+		return "", errors.New(reply.Errors[0].Message)
 	}
 
 	switch format {
 	case "text":
 		var output commandXML
-		// formatted := strings.Replace(reply.Data, "\n", "", -1)
-		err = xml.Unmarshal([]byte(reply.Data), &output)
-		if err != nil {
+		if err := xml.Unmarshal(body, &output); err != nil {
 			return "", err
 		}
 
@@ -612,114 +671,122 @@ func (j *Junos) GetConfig(format string, section ...string) (string, error) {
 		}
 
 		return output.Config, nil
+
 	case "xml":
-		return reply.Data, nil
+		return string(body), nil
 	}
 
-	return reply.Data, nil
+	return string(body), nil
 }
 
 // Config loads a given configuration file from your local machine,
 // a remote (FTP or HTTP server) location, or via configuration statements
-// from variables (type string or []string) within your script. Format must be
-// "set", "text" or "xml".
+// from variables (type string or []string) within your script.
+// Format must be "set", "text" or "xml".
 func (j *Junos) Config(path interface{}, format string, commit bool) error {
+	if j == nil || j.Session == nil {
+		return errors.New("attempt to call Config on nil Junos object")
+	}
+
 	var command string
+
 	switch format {
 	case "set":
-		switch path.(type) {
+		switch v := path.(type) {
 		case string:
-			if strings.Contains(path.(string), "tp://") {
-				command = fmt.Sprintf(rpcConfigURLSet, path.(string))
+			if strings.Contains(v, "tp://") {
+				command = fmt.Sprintf(rpcConfigURLSet, v)
+				break
 			}
 
-			if _, err := ioutil.ReadFile(path.(string)); err != nil {
-				command = fmt.Sprintf(rpcConfigStringSet, path.(string))
+			if _, err := os.ReadFile(v); err != nil {
+				command = fmt.Sprintf(rpcConfigStringSet, v)
 			} else {
-				data, err := ioutil.ReadFile(path.(string))
+				data, err := os.ReadFile(v)
 				if err != nil {
 					return err
 				}
-
 				command = fmt.Sprintf(rpcConfigFileSet, string(data))
 			}
+
 		case []string:
-			command = fmt.Sprintf(rpcConfigStringSet, strings.Join(path.([]string), "\n"))
+			command = fmt.Sprintf(rpcConfigStringSet, strings.Join(v, "\n"))
 		}
+
 	case "text":
-		switch path.(type) {
+		switch v := path.(type) {
 		case string:
-			if strings.Contains(path.(string), "tp://") {
-				command = fmt.Sprintf(rpcConfigURLText, path.(string))
+			if strings.Contains(v, "tp://") {
+				command = fmt.Sprintf(rpcConfigURLText, v)
+				break
 			}
 
-			if _, err := ioutil.ReadFile(path.(string)); err != nil {
-				command = fmt.Sprintf(rpcConfigStringText, path.(string))
+			if _, err := os.ReadFile(v); err != nil {
+				command = fmt.Sprintf(rpcConfigStringText, v)
 			} else {
-				data, err := ioutil.ReadFile(path.(string))
+				data, err := os.ReadFile(v)
 				if err != nil {
 					return err
 				}
-
 				command = fmt.Sprintf(rpcConfigFileText, string(data))
 			}
+
 		case []string:
-			command = fmt.Sprintf(rpcConfigStringText, strings.Join(path.([]string), "\n"))
+			command = fmt.Sprintf(rpcConfigStringText, strings.Join(v, "\n"))
 		}
+
 	case "xml":
-		switch path.(type) {
+		switch v := path.(type) {
 		case string:
-			if strings.Contains(path.(string), "tp://") {
-				command = fmt.Sprintf(rpcConfigURLXML, path.(string))
+			if strings.Contains(v, "tp://") {
+				command = fmt.Sprintf(rpcConfigURLXML, v)
+				break
 			}
 
-			if _, err := ioutil.ReadFile(path.(string)); err != nil {
-				command = fmt.Sprintf(rpcConfigStringXML, path.(string))
+			if _, err := os.ReadFile(v); err != nil {
+				command = fmt.Sprintf(rpcConfigStringXML, v)
 			} else {
-				data, err := ioutil.ReadFile(path.(string))
+				data, err := os.ReadFile(v)
 				if err != nil {
 					return err
 				}
-
 				command = fmt.Sprintf(rpcConfigFileXML, string(data))
 			}
+
 		case []string:
-			command = fmt.Sprintf(rpcConfigStringXML, strings.Join(path.([]string), "\n"))
+			command = fmt.Sprintf(rpcConfigStringXML, strings.Join(v, "\n"))
 		}
 	}
 
-	reply, err := j.Session.Exec(netconf.RawMethod(command))
+	ctx := context.Background()
+
+	reply, err := j.Session.Do(ctx, command)
 	if err != nil {
 		return err
 	}
 
 	if commit {
-		err = j.Commit()
-		if err != nil {
+		if err := j.Commit(); err != nil {
 			return err
 		}
 	}
 
-	if reply.Errors != nil {
-		for _, m := range reply.Errors {
-			return errors.New(m.Message)
-		}
+	if len(reply.Errors) > 0 {
+		return errors.New(reply.Errors[0].Message)
 	}
 
 	return nil
 }
 
-// Lock locks the candidate configuration.
 func (j *Junos) Lock() error {
-	reply, err := j.Session.Exec(netconf.RawMethod(rpcLock))
-	if err != nil {
-		return err
+	if j == nil || j.Session == nil {
+		return errors.New("attempt to call Lock on nil Junos object")
 	}
 
-	if reply.Errors != nil {
-		for _, m := range reply.Errors {
-			return errors.New(m.Message)
-		}
+	ctx := context.Background()
+
+	if err := j.Session.Lock(ctx, netconf.Candidate); err != nil {
+		return err
 	}
 
 	if j.CommitTimeout > 0 {
@@ -731,69 +798,73 @@ func (j *Junos) Lock() error {
 
 // Rescue will create or delete the rescue configuration given "save" or "delete" for the action.
 func (j *Junos) Rescue(action string) error {
-	var command string
+	if j == nil || j.Session == nil {
+		return errors.New("attempt to call Rescue on nil Junos object")
+	}
 
+	var command string
 	switch action {
 	case "save":
-		command = fmt.Sprintf(rpcRescueSave)
+		command = rpcRescueSave
 	case "delete":
-		command = fmt.Sprintf(rpcRescueDelete)
+		command = rpcRescueDelete
 	default:
 		return errors.New("you must specify save or delete for a rescue config action")
 	}
 
-	reply, err := j.Session.Exec(netconf.RawMethod(command))
+	ctx := context.Background()
+
+	reply, err := j.Session.Do(ctx, command)
 	if err != nil {
 		return err
 	}
 
-	if reply.Errors != nil {
-		for _, m := range reply.Errors {
-			return errors.New(m.Message)
-		}
+	if len(reply.Errors) > 0 {
+		return errors.New(reply.Errors[0].Message)
 	}
 
 	return nil
 }
 
-// Rollback loads and commits the configuration of a given rollback number or rescue state, by specifying "rescue."
+// Rollback loads and commits the configuration of a given rollback number
+// or rescue state, by specifying "rescue".
 func (j *Junos) Rollback(option interface{}) error {
-	var command = fmt.Sprintf(rpcRollbackConfig, option)
+	if j == nil || j.Session == nil {
+		return errors.New("attempt to call Rollback on nil Junos object")
+	}
 
+	command := fmt.Sprintf(rpcRollbackConfig, option)
 	if option == "rescue" {
-		command = fmt.Sprintf(rpcRescueConfig)
+		command = rpcRescueConfig
 	}
 
-	reply, err := j.Session.Exec(netconf.RawMethod(command))
+	ctx := context.Background()
+
+	reply, err := j.Session.Do(ctx, command)
 	if err != nil {
 		return err
 	}
 
-	err = j.Commit()
-	if err != nil {
+	if err := j.Commit(); err != nil {
 		return err
 	}
 
-	if reply.Errors != nil {
-		for _, m := range reply.Errors {
-			return errors.New(m.Message)
-		}
+	if len(reply.Errors) > 0 {
+		return errors.New(reply.Errors[0].Message)
 	}
 
 	return nil
 }
 
-// Unlock unlocks the candidate configuration.
 func (j *Junos) Unlock() error {
-	reply, err := j.Session.Exec(netconf.RawMethod(rpcUnlock))
-	if err != nil {
-		return err
+	if j == nil || j.Session == nil {
+		return errors.New("attempt to call Unlock on nil Junos object")
 	}
 
-	if reply.Errors != nil {
-		for _, m := range reply.Errors {
-			return errors.New(m.Message)
-		}
+	ctx := context.Background()
+
+	if err := j.Session.Unlock(ctx, netconf.Candidate); err != nil {
+		return err
 	}
 
 	if j.CommitTimeout > 0 {
@@ -805,15 +876,19 @@ func (j *Junos) Unlock() error {
 
 // Reboot will reboot the device.
 func (j *Junos) Reboot() error {
-	reply, err := j.Session.Exec(netconf.RawMethod(rpcReboot))
+	if j == nil || j.Session == nil {
+		return errors.New("attempt to call Reboot on nil Junos object")
+	}
+
+	ctx := context.Background()
+
+	reply, err := j.Session.Do(ctx, rpcReboot)
 	if err != nil {
 		return err
 	}
 
-	if reply.Errors != nil {
-		for _, m := range reply.Errors {
-			return errors.New(m.Message)
-		}
+	if len(reply.Errors) > 0 {
+		return errors.New(reply.Errors[0].Message)
 	}
 
 	return nil
@@ -823,15 +898,19 @@ func (j *Junos) Reboot() error {
 // check and evaluate the new configuration. Useful for when you get an error with
 // a commit or when you've changed the configuration significantly.
 func (j *Junos) CommitFull() error {
-	reply, err := j.Session.Exec(netconf.RawMethod(rpcCommitFull))
+	if j == nil || j.Session == nil {
+		return errors.New("attempt to call CommitFull on nil Junos object")
+	}
+
+	ctx := context.Background()
+
+	reply, err := j.Session.Do(ctx, rpcCommitFull)
 	if err != nil {
 		return err
 	}
 
-	if reply.Errors != nil {
-		for _, m := range reply.Errors {
-			return errors.New(m.Message)
-		}
+	if len(reply.Errors) > 0 {
+		return errors.New(reply.Errors[0].Message)
 	}
 
 	return nil

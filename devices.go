@@ -3,191 +3,206 @@ package junos
 import (
 	"encoding/xml"
 	"fmt"
-	"regexp"
-
-	"github.com/scottdware/go-rested"
+	"net"
+	"net/http"
 )
 
-// Devices contains a list of managed devices.
+const (
+	contentDiscoverDevices = "application/vnd.net.juniper.space.device-management.discover-devices+xml;version=1"
+	contentResync          = "application/vnd.net.juniper.space.device-management.exec-resync+xml;version=1"
+)
+
+const addDeviceHostXML = `
+<discover-devices>
+	<device>
+		<hostname>%s</hostname>
+		<user-name>%s</user-name>
+		<password>%s</password>
+	</device>
+</discover-devices>
+`
+
+const addDeviceIPXML = `
+<discover-devices>
+	<device>
+		<ip-address>%s</ip-address>
+		<user-name>%s</user-name>
+		<password>%s</password>
+	</device>
+</discover-devices>
+`
+
+type Device struct {
+	XMLName xml.Name `xml:"device"`
+	ID      int      `xml:"id"`
+	Name    string   `xml:"name"`
+	IP      string   `xml:"ip"`
+	Type    string   `xml:"type"`
+}
+
+// Devices represents managed devices returned by Space
 type Devices struct {
 	XMLName xml.Name `xml:"devices"`
 	Devices []Device `xml:"device"`
 }
 
-// A Device contains information about each individual device.
-type Device struct {
-	ID               int    `xml:"key,attr"`
-	Family           string `xml:"deviceFamily"`
-	Version          string `xml:"OSVersion"`
-	Platform         string `xml:"platform"`
-	Serial           string `xml:"serialNumber"`
-	IPAddress        string `xml:"ipAddr"`
-	Name             string `xml:"name"`
-	ConnectionStatus string `xml:"connectionStatus"`
-	ManagedStatus    string `xml:"managedStatus"`
+// jobID represents async job responses
+type jobID struct {
+	ID int `xml:"id"`
 }
 
-// addDeviceIPXML is the XML we send (POST) for adding a device by IP address.
-var addDeviceIPXML = `
-<discover-devices>
-    <ipAddressDiscoveryTarget>
-        <ipAddress>%s</ipAddress>
-    </ipAddressDiscoveryTarget>
-    <sshCredential>
-        <userName>%s</userName>
-        <password>%s</password>
-    </sshCredential>
-    <manageDiscoveredSystemsFlag>true</manageDiscoveredSystemsFlag>
-    <usePing>true</usePing>
-</discover-devices>
-`
+func (s *Space) getSoftwareID(name string) (int, error) {
+	pkgs, err := s.Software()
+	if err != nil {
+		return 0, err
+	}
 
-// addDeviceHostXML is the XML we send (POST) for adding a device by hostname.
-var addDeviceHostXML = `
-<discover-devices>
-    <hostNameDiscoveryTarget>
-        <hostName>%s</hostName>
-    </hostNameDiscoveryTarget>
-    <sshCredential>
-        <userName>%s</userName>
-        <password>%s</password>
-    </sshCredential>
-    <manageDiscoveredSystemsFlag>true</manageDiscoveredSystemsFlag>
-    <usePing>true</usePing>
-</discover-devices>
-`
+	for _, p := range pkgs.Packages {
+		if p.Name == name {
+			return p.ID, nil
+		}
+	}
 
-// getDeviceID returns the ID of a managed device.
-func (s *Space) getDeviceID(device interface{}) (int, error) {
-	var err error
-	var deviceID int
-	ipRegex := regexp.MustCompile(`(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})`)
+	return 0, fmt.Errorf("software image not found: %s", name)
+}
+
+func (s *Space) getDeviceID(device any) (int, error) {
+	switch v := device.(type) {
+
+	case int:
+		if v <= 0 {
+			return 0, fmt.Errorf("invalid device ID: %d", v)
+		}
+		return v, nil
+
+	case string:
+		if v == "" {
+			return 0, fmt.Errorf("device identifier cannot be empty")
+		}
+		return s.findDeviceIDByString(v)
+
+	default:
+		return 0, fmt.Errorf(
+			"unsupported device identifier type %T (must be int or string)",
+			device,
+		)
+	}
+}
+
+func (s *Space) findDeviceIDByString(identifier string) (int, error) {
 	devices, err := s.Devices()
 	if err != nil {
 		return 0, err
 	}
 
-	switch device.(type) {
-	case int:
-		deviceID = device.(int)
-	case string:
-		if ipRegex.MatchString(device.(string)) {
-			for _, d := range devices.Devices {
-				if d.IPAddress == device.(string) {
-					deviceID = d.ID
-				}
-			}
-		}
-		for _, d := range devices.Devices {
-			if d.Name == device.(string) {
-				deviceID = d.ID
-			}
+	for _, d := range devices.Devices {
+		if d.Name == identifier || d.IP == identifier {
+			return d.ID, nil
 		}
 	}
 
-	return deviceID, nil
+	return 0, fmt.Errorf("device not found: %s", identifier)
 }
 
-// AddDevice adds a new managed device to Junos Space, and returns the Job ID.
-func (s *Space) AddDevice(host, user, password string) (int, error) {
-	r := rested.NewRequest()
-	r.BasicAuth(s.User, s.Password)
-	headers := map[string]string{
-		"Content-Type": contentDiscoverDevices,
-	}
-	var job jobID
-	var addDevice, xmlBody string
-	ipRegex := regexp.MustCompile(`(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})`)
-
-	if ipRegex.MatchString(host) {
-		addDevice = addDeviceIPXML
-	}
-
-	addDevice = addDeviceHostXML
-
-	uri := fmt.Sprintf("https://%s/api/space/device-management/discover-devices", s.Host)
-	xmlBody = fmt.Sprintf(addDevice, host, user, password)
-
-	resp := r.Send("post", uri, []byte(xmlBody), headers, nil)
-	if resp.Error != nil {
-		return 0, resp.Error
-	}
-
-	err := xml.Unmarshal(resp.Body, &job)
-	if err != nil {
-		return 0, err
-	}
-
-	return job.ID, nil
-}
-
-// Devices queries the Junos Space server and returns all of the information
-// about each device that is managed by Space.
+// Devices queries the Junos Space server and returns all managed devices.
 func (s *Space) Devices() (*Devices, error) {
-	r := rested.NewRequest()
-	r.BasicAuth(s.User, s.Password)
-	var devices Devices
-	uri := fmt.Sprintf("https://%s/api/space/device-management/devices", s.Host)
-
-	resp := r.Send("get", uri, nil, nil, nil)
-	if resp.Error != nil {
-		return nil, resp.Error
+	body, err := s.newRequest(
+		http.MethodGet,
+		"/api/space/device-management/devices",
+		nil,
+		nil,
+		nil,
+	)
+	if err != nil {
+		return nil, err
 	}
 
-	err := xml.Unmarshal(resp.Body, &devices)
-	if err != nil {
+	var devices Devices
+	if err := xml.Unmarshal(body, &devices); err != nil {
 		return nil, err
 	}
 
 	return &devices, nil
 }
 
-// RemoveDevice removes a device from Junos Space. You can specify the device ID, name
-// or IP address.
-func (s *Space) RemoveDevice(device interface{}) error {
-	r := rested.NewRequest()
-	r.BasicAuth(s.User, s.Password)
-	var err error
+func (s *Space) AddDevice(host, user, password string) (int, error) {
+	if host == "" || user == "" || password == "" {
+		return 0, fmt.Errorf("host, user, and password must be provided")
+	}
+
+	template := addDeviceHostXML
+	if net.ParseIP(host) != nil {
+		template = addDeviceIPXML
+	}
+
+	payload := fmt.Sprintf(template, host, user, password)
+
+	body, err := s.newRequest(
+		http.MethodPost,
+		"/api/space/device-management/discover-devices",
+		[]byte(payload),
+		map[string]string{
+			"Content-Type": contentDiscoverDevices,
+		},
+		nil,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	var job jobID
+	if err := xml.Unmarshal(body, &job); err != nil {
+		return 0, err
+	}
+
+	return job.ID, nil
+}
+
+func (s *Space) RemoveDevice(device any) error {
 	deviceID, err := s.getDeviceID(device)
 	if err != nil {
 		return err
 	}
 
-	if deviceID != 0 {
-		uri := fmt.Sprintf("https://%s/api/space/device-management/devices/%d", s.Host, deviceID)
+	_, err = s.newRequest(
+		http.MethodDelete,
+		fmt.Sprintf(
+			"/api/space/device-management/devices/%d",
+			deviceID,
+		),
+		nil,
+		nil,
+		nil,
+	)
 
-		resp := r.Send("delete", uri, nil, nil, nil)
-		if resp.Error != nil {
-			return resp.Error
-		}
-	}
-
-	return nil
+	return err
 }
 
-// Resync synchronizes the device with Junos Space. Good to use if you make a lot of
-// changes outside of Junos Space such as adding interfaces, zones, etc.
+// Resync synchronizes the device with Junos Space.
 func (s *Space) Resync(device interface{}) (int, error) {
-	r := rested.NewRequest()
-	r.BasicAuth(s.User, s.Password)
-	headers := map[string]string{
-		"Content-Type": contentResync,
-	}
-	var job jobID
 	deviceID, err := s.getDeviceID(device)
 	if err != nil {
 		return 0, err
 	}
-
-	uri := fmt.Sprintf("https://%s/api/space/device-management/devices/%d/exec-resync", s.Host, deviceID)
-
-	resp := r.Send("post", uri, nil, headers, nil)
-	if resp.Error != nil {
-		return 0, resp.Error
+	if deviceID == 0 {
+		return 0, fmt.Errorf("device not found")
 	}
 
-	err = xml.Unmarshal(resp.Body, &job)
+	body, err := s.newRequest(
+		http.MethodPost,
+		fmt.Sprintf("/api/space/device-management/devices/%d/exec-resync", deviceID),
+		nil,
+		map[string]string{
+			"Content-Type": contentResync,
+		},
+		nil,
+	)
 	if err != nil {
+		return 0, err
+	}
+
+	var job jobID
+	if err := xml.Unmarshal(body, &job); err != nil {
 		return 0, err
 	}
 

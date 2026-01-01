@@ -2,187 +2,230 @@ package junos
 
 import (
 	"encoding/xml"
+	"errors"
 	"fmt"
-
-	"github.com/scottdware/go-rested"
+	"net/http"
 )
 
-// SoftwarePackages contains a list of software packages managed by Junos Space.
 type SoftwarePackages struct {
-	Packages []SoftwarePackage `xml:"package"`
+	XMLName  xml.Name          `xml:"software-packages"`
+	Packages []SoftwarePackage `xml:"software-package"`
 }
 
-// A SoftwarePackage contains information about each individual software package.
 type SoftwarePackage struct {
-	ID       int    `xml:"key,attr"`
-	Name     string `xml:"fileName"`
-	Version  string `xml:"version"`
-	Platform string `xml:"platformType"`
+	ID      int    `xml:"id"`
+	Name    string `xml:"name"`
+	Version string `xml:"version"`
 }
 
-// SoftwareUpgrade consists of options available to use before issuing a software upgrade.
 type SoftwareUpgrade struct {
-	UseDownloaded bool // Use an image already staged on the device.
-	Validate      bool // Check/don't check compatibility with current configuration.
-	Reboot        bool // Reboot system after adding package.
-	RebootAfter   int  // Reboot the system after "x" minutes.
-	Cleanup       bool // Remove any pre-existing packages on the device.
-	RemoveAfter   bool // Remove the package after successful installation.
+	UseDownloaded bool
+	Validate      bool
+	Reboot        bool
+	RebootAfter   bool
+	Cleanup       bool
+	RemoveAfter   bool
 }
 
-// deployXML is XML we send (POST) for image deployment.
-var deployXML = `
-<exec-deploy>
-    <devices>
-        <device href= "/api/space/device-management/devices/%d"/>
-    </devices> 
-    <deployOptions> 
-        <useAlreadyDownloaded>%t</useAlreadyDownloaded>
-        <validate>%t</validate>
-        <bestEffortLoad>false</bestEffortLoad>
-        <snapShotRequired>false</snapShotRequired>
-        <rebootDevice>%t</rebootDevice>
-        <rebootAfterXMinutes>%d</rebootAfterXMinutes>
-        <cleanUpExistingOnDevice>%t</cleanUpExistingOnDevice>
-        <removePkgAfterInstallation>%t</removePkgAfterInstallation>
-    </deployOptions>
-</exec-deploy>
-`
-
-// removeStagedXML is XML we send (POST) for removing a staged image.
-var removeStagedXML = `
-<exec-remove>
-    <devices>
-        <device href="/api/space/device-management/devices/%d"/>
-    </devices>
-</exec-remove>
-`
-
-// stageXML is XML we send (POST) for staging an image on a device.
-var stageXML = `
-<exec-stage>
-    <devices>
-        <device href="/api/space/device-management/devices/%d"/>
-    </devices>
-    <stageOptions>
-        <cleanUpExistingOnDevice>%t</cleanUpExistingOnDevice>
-    </stageOptions>
-</exec-stage>
-`
-
-// getSoftwareID returns the ID of the software package.
-func (s *Space) getSoftwareID(image string) (int, error) {
-	var err error
-	var softwareID int
-	images, err := s.Software()
+func (s *Space) resolveDeviceAndSoftware(device, image string) (int, int, error) {
+	deviceID, err := s.getDeviceID(device)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
+	}
+	if deviceID == 0 {
+		return 0, 0, errors.New("device not found")
 	}
 
-	for _, sw := range images.Packages {
-		if sw.Name == image {
-			softwareID = sw.ID
-		}
-	}
-
-	return softwareID, nil
-}
-
-// DeploySoftware starts the upgrade process on the device, using the given image along
-// with the options specified.
-func (s *Space) DeploySoftware(device, image string, options *SoftwareUpgrade) (int, error) {
-	r := rested.NewRequest()
-	r.BasicAuth(s.User, s.Password)
-	headers := map[string]string{
-		"Content-Type": contentExecDeploy,
-	}
-	var job jobID
-	deviceID, _ := s.getDeviceID(device)
-	softwareID, _ := s.getSoftwareID(image)
-	deploy := fmt.Sprintf(deployXML, deviceID, options.UseDownloaded, options.Validate, options.Reboot, options.RebootAfter, options.Cleanup, options.RemoveAfter)
-	uri := fmt.Sprintf("https://%s/api/space/software-management/packages/%d/exec-deploy", s.Host, softwareID)
-
-	resp := r.Send("post", uri, []byte(deploy), headers, nil)
-	if resp.Error != nil {
-		return 0, resp.Error
-	}
-
-	err := xml.Unmarshal(resp.Body, &job)
+	softwareID, err := s.getSoftwareID(image)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
+	}
+	if softwareID == 0 {
+		return 0, 0, errors.New("software image not found")
 	}
 
-	return job.ID, nil
+	return deviceID, softwareID, nil
 }
 
-// RemoveStagedSoftware will delete the staged software image on the device.
-func (s *Space) RemoveStagedSoftware(device, image string) (int, error) {
-	r := rested.NewRequest()
-	r.BasicAuth(s.User, s.Password)
-	headers := map[string]string{
-		"Content-Type": contentExecRemove,
-	}
-	var job jobID
-	deviceID, _ := s.getDeviceID(device)
-	softwareID, _ := s.getSoftwareID(image)
-	remove := fmt.Sprintf(removeStagedXML, deviceID)
-	uri := fmt.Sprintf("https://%s/api/space/software-management/packages/%d/exec-remove", s.Host, softwareID)
-
-	resp := r.Send("post", uri, []byte(remove), headers, nil)
-	if resp.Error != nil {
-		return 0, resp.Error
-	}
-
-	err := xml.Unmarshal(resp.Body, &job)
-	if err != nil {
-		return 0, err
-	}
-
-	return job.ID, nil
-}
-
-// Software queries the Junos Space server and returns all of the information
-// about each software image that Space manages.
 func (s *Space) Software() (*SoftwarePackages, error) {
-	r := rested.NewRequest()
-	r.BasicAuth(s.User, s.Password)
-	var software SoftwarePackages
-	uri := fmt.Sprintf("https://%s/api/space/software-management/packages", s.Host)
-
-	resp := r.Send("get", uri, nil, nil, nil)
-	if resp.Error != nil {
-		return nil, resp.Error
+	body, err := s.newRequest(
+		http.MethodGet,
+		"/api/space/software-management/packages",
+		nil,
+		nil,
+		nil,
+	)
+	if err != nil {
+		return nil, err
 	}
 
-	err := xml.Unmarshal(resp.Body, &software)
-	if err != nil {
+	var software SoftwarePackages
+	if err := xml.Unmarshal(body, &software); err != nil {
 		return nil, err
 	}
 
 	return &software, nil
 }
 
-// StageSoftware loads the given software image onto the device but does not
-// upgrade it. The package is placed in the /var/tmp directory.
-func (s *Space) StageSoftware(device, image string, cleanup bool) (int, error) {
-	r := rested.NewRequest()
-	r.BasicAuth(s.User, s.Password)
-	headers := map[string]string{
-		"Content-Type": contentExecStage,
-	}
-	var job jobID
-	deviceID, _ := s.getDeviceID(device)
-	softwareID, _ := s.getSoftwareID(image)
-	stage := fmt.Sprintf(stageXML, deviceID, cleanup)
-	uri := fmt.Sprintf("https://%s/api/space/software-management/packages/%d/exec-stage", s.Host, softwareID)
+func (s *Space) DeploySoftware(
+	device, image string,
+	options *SoftwareUpgrade,
+) (int, error) {
 
-	resp := r.Send("post", uri, []byte(stage), headers, nil)
-	if resp.Error != nil {
-		return 0, resp.Error
+	if options == nil {
+		return 0, errors.New("software upgrade options cannot be nil")
 	}
 
-	err := xml.Unmarshal(resp.Body, &job)
+	deviceID, err := s.getDeviceID(device)
 	if err != nil {
+		return 0, err
+	}
+	if deviceID == 0 {
+		return 0, errors.New("device not found")
+	}
+
+	softwareID, err := s.getSoftwareID(image)
+	if err != nil {
+		return 0, err
+	}
+	if softwareID == 0 {
+		return 0, errors.New("software image not found")
+	}
+
+	type deployRequest struct {
+		XMLName       xml.Name `xml:"exec-deploy"`
+		DeviceID      int      `xml:"device-id"`
+		UseDownloaded bool     `xml:"use-downloaded"`
+		Validate      bool     `xml:"validate"`
+		Reboot        bool     `xml:"reboot"`
+		RebootAfter   bool     `xml:"reboot-after"`
+		Cleanup       bool     `xml:"cleanup"`
+		RemoveAfter   bool     `xml:"remove-after"`
+	}
+
+	req := deployRequest{
+		DeviceID:      deviceID,
+		UseDownloaded: options.UseDownloaded,
+		Validate:      options.Validate,
+		Reboot:        options.Reboot,
+		RebootAfter:   options.RebootAfter,
+		Cleanup:       options.Cleanup,
+		RemoveAfter:   options.RemoveAfter,
+	}
+
+	payload, err := xml.Marshal(req)
+	if err != nil {
+		return 0, err
+	}
+
+	body, err := s.newRequest(
+		http.MethodPost,
+		fmt.Sprintf(
+			"/api/space/software-management/packages/%d/exec-deploy",
+			softwareID,
+		),
+		payload,
+		map[string]string{
+			"Content-Type": contentExecDeploy,
+		},
+		nil,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	var job jobID
+	if err := xml.Unmarshal(body, &job); err != nil {
+		return 0, err
+	}
+
+	return job.ID, nil
+}
+
+func (s *Space) RemoveStagedSoftware(device, image string) (int, error) {
+	deviceID, softwareID, err := s.resolveDeviceAndSoftware(device, image)
+	if err != nil {
+		return 0, err
+	}
+
+	type removeRequest struct {
+		XMLName  xml.Name `xml:"exec-remove"`
+		DeviceID int      `xml:"device-id"`
+	}
+
+	req := removeRequest{
+		DeviceID: deviceID,
+	}
+
+	payload, err := xml.Marshal(req)
+	if err != nil {
+		return 0, err
+	}
+
+	body, err := s.newRequest(
+		http.MethodPost,
+		fmt.Sprintf(
+			"/api/space/software-management/packages/%d/exec-remove",
+			softwareID,
+		),
+		payload,
+		map[string]string{
+			"Content-Type": contentExecRemove,
+		},
+		nil,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	var job jobID
+	if err := xml.Unmarshal(body, &job); err != nil {
+		return 0, err
+	}
+
+	return job.ID, nil
+}
+
+func (s *Space) StageSoftware(device, image string, cleanup bool) (int, error) {
+	deviceID, softwareID, err := s.resolveDeviceAndSoftware(device, image)
+	if err != nil {
+		return 0, err
+	}
+
+	type stageRequest struct {
+		XMLName  xml.Name `xml:"exec-stage"`
+		DeviceID int      `xml:"device-id"`
+		Cleanup  bool     `xml:"cleanup"`
+	}
+
+	req := stageRequest{
+		DeviceID: deviceID,
+		Cleanup:  cleanup,
+	}
+
+	payload, err := xml.Marshal(req)
+	if err != nil {
+		return 0, err
+	}
+
+	body, err := s.newRequest(
+		http.MethodPost,
+		fmt.Sprintf(
+			"/api/space/software-management/packages/%d/exec-stage",
+			softwareID,
+		),
+		payload,
+		map[string]string{
+			"Content-Type": contentExecStage,
+		},
+		nil,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	var job jobID
+	if err := xml.Unmarshal(body, &job); err != nil {
 		return 0, err
 	}
 
