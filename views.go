@@ -570,7 +570,7 @@ type Views struct {
 	Environment    EnvironmentTable
 	IKESAs         IKESAs
 	IPSecSAs       IPSecSAs
-	OSPFNeighbors  OSPFNeighborTable
+	OSPFNeighbor  OSPFNeighborTable
 	OSPFDatabase   OSPFDatabaseTable
 	ISISDatabase   ISISDatabaseTable
 }
@@ -593,7 +593,7 @@ var (
 		"firewallpolicy": "<get-firewall-policies/>",
 		"ike":            "<get-ike-security-associations-information/>",
 		"ipsec":          "<get-security-associations-information/>",
-		"ospfneighbors":  "<get-ospf-neighbor-information/>",
+		"ospfneighbor":  "<get-ospf-neighbor-information/>",
 		"ospfdatabase":   "<get-ospf-database-information/>",
 		"lsp":            "<get-mpls-lsp-information/>",
 	}
@@ -912,7 +912,7 @@ func (j *Junos) View(view string, option ...string) (*Views, error) {
 		}
 		results.IPSecSAs = ipsecSAs
 
-	case "ospfneighbors":
+	case "ospfneighbor":
 		var ospfNeighbors OSPFNeighborTable
 		if err := xml.Unmarshal(data, &ospfNeighbors); err != nil {
 			return nil, err
