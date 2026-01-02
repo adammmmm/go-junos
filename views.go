@@ -917,7 +917,7 @@ func (j *Junos) View(view string, option ...string) (*Views, error) {
 		if err := xml.Unmarshal(data, &ospfNeighbors); err != nil {
 			return nil, err
 		}
-		results.OSPFNeighbors = ospfNeighbors
+		results.OSPFNeighbor = ospfNeighbors
 
 	case "ospfdatabase":
 		var ospfDatabase OSPFDatabaseTable
