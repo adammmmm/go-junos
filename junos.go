@@ -386,20 +386,11 @@ func (j *Junos) RPC(rpc string) (string, error) {
 		return "", err
 	}
 
-	type result struct {
-		Output string `xml:",innerxml"`
-	}
-
-	var r result
-	if err := xml.Unmarshal([]byte(reply.Body), &r); err != nil {
-		return "", err
-	}
-
 	if len(reply.Errors) > 0 {
 		return "", errors.New(reply.Errors[0].Message)
 	}
 
-	return r.Output, nil
+	return string(reply.Body), nil
 }
 
 // HasPendingChanges reports whether there are uncommitted candidate configuration changes.
