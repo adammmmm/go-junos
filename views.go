@@ -39,6 +39,40 @@ type ArpEntry struct {
 	Interface  TrimmedString `xml:"interface-name"`
 }
 
+type OSPFNeighborTable struct {
+	OSPFNeighbors []OSPFNeighbor `xml:"ospf-neighbor"`
+}
+
+type OSPFNeighbor struct {
+	NeighborAddress   TrimmedString `xml:"neighbor-address"`
+	InterfaceName     TrimmedString `xml:"interface-name"`
+	OSPFNeighborState TrimmedString `xml:"ospf-neighbor-state"`
+	NeighborID        TrimmedString `xml:"neighbor-id"`
+	NeighborPriority  int           `xml:"neighbor-priority"`
+	ActivityTimer     int           `xml:"activity-timer"`
+}
+
+type OSPFDatabaseTable struct {
+	OSPFAreaHeaders     []OSPFAreaHeader    `xml:"ospf-area-header"`
+	OSPFDatabaseEntries []OSPFDatabaseEntry `xml:"ospf-database"`
+}
+
+type OSPFAreaHeader struct {
+	OSPFArea TrimmedString `xml:"ospf-id"`
+}
+
+type OSPFDatabaseEntry struct {
+	LSAType           TrimmedString `xml:"lsa-type"`
+	LSAID             TrimmedString `xml:"lsa-id"`
+	AdvertisingRouter TrimmedString `xml:"advertising-router"`
+	SequenceNumber    TrimmedString `xml:"sequence-number"`
+	Age               int           `xml:"age"`
+	Options           TrimmedString `xml:"options"`
+	Checksum          TrimmedString `xml:"checksum"`
+	LSALength         int           `xml:"lsa-length"`
+	OurEntry          bool          `xml:"our-entry"`
+}
+
 // RoutingTable contains every routing table on the device.
 type RoutingTable struct {
 	RouteTables []RouteTable `xml:"route-table"`
@@ -493,6 +527,8 @@ type Views struct {
 	Environment    EnvironmentTable
 	IKESAs         IKESAs
 	IPSecSAs       IPSecSAs
+	OSPFNeighbors  OSPFNeighborTable
+	OSPFDatabase   OSPFDatabaseTable
 }
 
 var (
@@ -513,6 +549,8 @@ var (
 		"firewallpolicy": "<get-firewall-policies/>",
 		"ike":            "<get-ike-security-associations-information/>",
 		"ipsec":          "<get-security-associations-information/>",
+		"ospfneighbors":  "<get-ospf-neighbor-information/>",
+		"ospfdatabase":   "<get-ospf-database-information/>",
 	}
 )
 
@@ -816,6 +854,20 @@ func (j *Junos) View(view string, option ...string) (*Views, error) {
 			return nil, err
 		}
 		results.IPSecSAs = ipsecSAs
+
+	case "ospfneighbors":
+		var ospfNeighbors OSPFNeighborTable
+		if err := xml.Unmarshal(data, &ospfNeighbors); err != nil {
+			return nil, err
+		}
+		results.OSPFNeighbors = ospfNeighbors
+
+	case "ospfdatabase":
+		var ospfDatabase OSPFDatabaseTable
+		if err := xml.Unmarshal(data, &ospfDatabase); err != nil {
+			return nil, err
+		}
+		results.OSPFDatabase = ospfDatabase
 
 	case "ethernetswitch":
 		var ethtable EthernetSwitchingTable
