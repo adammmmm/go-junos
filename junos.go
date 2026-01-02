@@ -375,25 +375,31 @@ func (j *Junos) GatherFacts() error {
 }
 
 // RPC executes an arbitrary NETCONF RPC against the device.
-func (j *Junos) RPC(ctx context.Context, rpc string) (*netconf.Reply, error) {
+func (j *Junos) RPC(rpc string) (string, error) {
 	if j == nil || j.Session == nil {
-		return nil, errors.New("attempt to call RPC on nil Junos object")
+		return "", errors.New("attempt to call RPC on nil Junos object")
 	}
-
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx := context.Background()
 
 	reply, err := j.Session.Do(ctx, rpc)
 	if err != nil {
-		return nil, err
+		return "", err
+	}
+
+	type result struct {
+		Output string `xml:",innerxml"`
+	}
+
+	var r result
+	if err := xml.Unmarshal([]byte(reply.Body), &r); err != nil {
+		return "", err
 	}
 
 	if len(reply.Errors) > 0 {
-		return reply, errors.New(reply.Errors[0].Message)
+		return "", errors.New(reply.Errors[0].Message)
 	}
 
-	return reply, nil
+	return strings.TrimSpace(r.Output), nil
 }
 
 // HasPendingChanges reports whether there are uncommitted candidate configuration changes.
