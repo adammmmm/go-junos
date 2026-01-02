@@ -55,7 +55,7 @@ type RouteTable struct {
 }
 
 type EnvironmentTable struct {
-	EnvironmentEntries []EnvironmentItem `xml:"environment-item"`
+	EnvironmentItems []EnvironmentItem `xml:"environment-item"`
 }
 
 type EnvironmentItem struct {
