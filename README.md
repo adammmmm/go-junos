@@ -1,5 +1,4 @@
 ## go-junos
-[![GoDoc](https://godoc.org/github.com/scottdware/go-junos?status.svg)](https://godoc.org/github.com/scottdware/go-junos) [![Travis-CI](https://travis-ci.org/scottdware/go-junos.svg?branch=master)](https://travis-ci.org/scottdware/go-junos) [![Go Report Card](https://goreportcard.com/badge/github.com/scottdware/go-junos)](https://goreportcard.com/report/github.com/scottdware/go-junos)
 
 A Go package that interacts with Junos devices, and allows you to do the following:
 
@@ -8,13 +7,13 @@ A Go package that interacts with Junos devices, and allows you to do the followi
 * Rollback the configuration to a given state or a "rescue" config.
 * Configure devices by submitting commands, uploading a local file or from a remote FTP/HTTP server.
 * Commit operations: lock, unlock, commit, commit at, commit confirmed, commit full.
-* [Device views][views] - This will allow you to quickly get all the information on the device for the specified view.
+* [Device views](https://github.com/adammmmm/go-junos#views) - This will allow you to quickly get all the information on the device for the specified view.
 * [SRX] Convert from a zone-based address book to a global one.
 
 ### Installation
 `go get -u github.com/adammmmm/go-junos`
 
-> **Note:** This package makes all of it's calls over [Netconf][netconf-rfc] using the [netconf][netconf] package from nemith. Please make sure you allow Netconf communication to your devices:
+> **Note:** This package makes all of it's calls using netconf over ssh using the [netconf](https://github.com/nemith/netconf) package from nemith. Please make sure you allow Netconf communication to your devices:
 ```
 set system services netconf ssh
 set security zones security-zone <xxx> interfaces <xxx> host-inbound-traffic system-services netconf
@@ -22,7 +21,7 @@ set security zones security-zone <xxx> interfaces <xxx> host-inbound-traffic sys
 
 ### Authentication Methods
 There are two different ways you can authenticate against to device. Standard username/password combination, or use SSH keys.
-There is an [AuthMethod][authmethod] struct which defines these methods that you will need to use in your code. Here is an example of 
+There is an `AuthMethod` struct which defines these methods that you will need to use in your code. Here is an example of 
 connecting to a device using only a username and password.
 
 ```Go
@@ -61,7 +60,7 @@ Puttygen. Once you have generated it, you will need to export your private key u
 ![alt-text](https://raw.githubusercontent.com/scottdware/images/master/puttygen-export-openssh.png "Puttygen private key export")
 
 ### Examples
-Visit the [GoDoc][godoc-go-junos] page for package documentation and examples.
+[j-cli](https://github.com/adammmmm/j-cli) is one example for how to use it.
 
 Connect to a device, and view the current config to rollback 1.
 ```Go
@@ -161,6 +160,7 @@ Views | CLI equivilent
 `ipsec` | `show ipsec security-associations`
 `ospfneighbor` | `show ospf neighbor`
 `ospfdatabase` | `show ospf database`
+`lsp` | `show mpls lsp`
 
 
 >**NOTE**: Clustered SRX's will only show the NAT rules from one of the nodes, since they are duplicated on the other.
@@ -170,14 +170,15 @@ interface and all of it's logical interfaces, you can optionally specify the nam
 
 `jnpr.View("interface", "ge-0/0/0")`
 
+The `lsp` view has a similar option to choose ingress, egress or transit, e.g.:
+
+`jnpr.View("lsp", "ingress")`
+
 ##### Creating Custom Views
 
 You can even create a custom view by creating a `struct` that models the XML output from using the `GetConfig()` function. Granted,
 this is a little more work, and requires you to know a bit more about the Go language (such as unmarshalling XML), but if there's a custom
 view that you want to see, it's possible to do this for anything you want.
-
-I will be adding more views over time, but feel free to request ones you'd like to see by [emailing](mailto:scottdware@gmail.com) me, or drop
-me a line on [Twitter](https://twitter.com/scottdware).
 
 **Example:** View the ARP table on a device
 ```Go
@@ -214,19 +215,38 @@ IP: 10.1.1.36
 Interface: reth0.1
 ```
 
-[netconf-rfc](https://tools.ietf.org/html/rfc6241)
+There's also a String() function on the *View which will try to print it pretty well:
 
-[netconf](https://github.com/nemith/netconf)
+```Go
+output, err := jnpr.View("arp")
+if err != nil {
+    fmt.Println(err)
+}
+fmt.Println(output)
 
-[juniper](https://www.juniper.net)
+// Will print this
 
-[original go-junos](https://github.com/scottdware/go-junos)
+arp-entry-count: 4
+arp-table-entry:
+  - mac-address: 00:01:ab:cd:4d:73
+    ip-address: 10.1.1.28
+    interface-name: reth0.1
+  - mac-address: 00:01:ab:cd:4d:74
+    ip-address: 10.1.1.30
+    interface-name: reth0.1
+  - mac-address: 00:01:ab:cd:4e:73
+    ip-address: 10.1.1.33
+    interface-name: reth0.1
+  - mac-address: 00:01:ab:cd:4f:73
+    ip-address: 10.1.1.36
+    interface-name: reth0.1
+  - mac-address: 00:01:ab:cd:4f:74
+    ip-address: 10.1.1.39
+    interface-name: reth0.1
+```
 
-[godoc-go-junos](https://godoc.org/github.com/scottdware/go-junos)
-
-[views](https://github.com/adammmmm/go-junos#views)
-
-[authmethod](https://godoc.org/github.com/adammmmm/go-junos#AuthMethod)
-
-
-
+- [netconf-rfc](https://tools.ietf.org/html/rfc6241)
+- [netconf](https://github.com/nemith/netconf)
+- [juniper](https://www.juniper.net)
+- [original go-junos](https://github.com/scottdware/go-junos)
+- [views](https://github.com/adammmmm/go-junos#views)
