@@ -26,6 +26,49 @@ func (t TrimmedString) String() string {
 	return string(t)
 }
 
+// get-isis-database-information
+type ISISDatabaseTable struct {
+	Level               int                 `xml:"level"`
+	LSPCount            int                 `xml:"lsp-count"`
+	ISISDatabaseEntries []ISISDatabaseEntry `xml:"isis-database-entry"`
+}
+
+type ISISDatabaseEntry struct {
+	LSPID             TrimmedString `xml:"lsp-id"`
+	SequenceNumber    TrimmedString `xml:"sequence-number"`
+	Checksum          TrimmedString `xml:"checksum"`
+	RemainingLifetime int           `xml:"remaining-lifetime"`
+	LSPAttributes     TrimmedString `xml:"lsp-attributes"`
+}
+
+type MPLSLSPTable struct {
+	RSVPSessionDataEntry RSVPSessionData `xml:"rsvp-session-data"`
+}
+
+type RSVPSessionData struct {
+	SessionType  TrimmedString `xml:"session-type"`
+	Count        int           `xml:"session-count"`
+	RSVPSessions []RSVPSession `xml:"rsvp-session"`
+	DisplayCount int           `xml:"display-count"`
+	UpCount      int           `xml:"up-count"`
+	DownCount    int           `xml:"down-count"`
+}
+
+type RSVPSession struct {
+	MPLSLSP MPLSLSPEntry `xml:"mpls-lsp"`
+}
+
+type MPLSLSPEntry struct {
+	DestinationAddress TrimmedString `xml:"destination-address"`
+	SourceAddress      TrimmedString `xml:"source-address"`
+	LSPState           TrimmedString `xml:"lsp-state"`
+	RouteCount         int           `xml:"route-count"`
+	ActivePath         TrimmedString `xml:"active-path"`
+	IsPrimary          bool          `xml:"is-primary"`
+	Name               TrimmedString `xml:"lsp-name"`
+	LSPDescription     TrimmedString `xml:"lsp-description"`
+}
+
 // ArpTable contains the ARP table on the device.
 type ArpTable struct {
 	Count   int        `xml:"arp-entry-count"`
@@ -529,6 +572,7 @@ type Views struct {
 	IPSecSAs       IPSecSAs
 	OSPFNeighbors  OSPFNeighborTable
 	OSPFDatabase   OSPFDatabaseTable
+	ISISDatabase   ISISDatabaseTable
 }
 
 var (
@@ -551,6 +595,7 @@ var (
 		"ipsec":          "<get-security-associations-information/>",
 		"ospfneighbors":  "<get-ospf-neighbor-information/>",
 		"ospfdatabase":   "<get-ospf-database-information/>",
+		"lsp":            "<get-mpls-lsp-information/>",
 	}
 )
 
@@ -775,6 +820,12 @@ func (j *Junos) View(view string, option ...string) (*Views, error) {
 		if err != nil {
 			return nil, err
 		}
+	} else if view == "lsp" && len(option) > 0 {
+		rpcLSPType := fmt.Sprintf("<get-mpls-lsp-information><%s/></get-mpls-lsp-information>", option[0])
+		reply, err = j.Session.Do(ctx, rpcLSPType)
+		if err != nil {
+			return nil, err
+		}
 	} else {
 		rpc, ok := viewCategories[view]
 		if !ok {
@@ -798,6 +849,12 @@ func (j *Junos) View(view string, option ...string) (*Views, error) {
 	data := reply.Body
 
 	switch view {
+	case "isisdatabase":
+		var isisTable ISISDatabaseTable
+		if err := xml.Unmarshal(data, &isisTable); err != nil {
+			return nil, err
+		}
+		results.ISISDatabase = isisTable
 
 	case "arp":
 		var arpTable ArpTable
