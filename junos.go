@@ -399,7 +399,7 @@ func (j *Junos) RPC(rpc string) (string, error) {
 		return "", errors.New(reply.Errors[0].Message)
 	}
 
-	return strings.TrimSpace(r.Output), nil
+	return r.Output, nil
 }
 
 // HasPendingChanges reports whether there are uncommitted candidate configuration changes.
