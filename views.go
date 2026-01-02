@@ -58,7 +58,7 @@ type OSPFDatabaseTable struct {
 }
 
 type OSPFAreaHeader struct {
-	OSPFArea TrimmedString `xml:"ospf-id"`
+	OSPFArea TrimmedString `xml:"ospf-area"`
 }
 
 type OSPFDatabaseEntry struct {
