@@ -55,11 +55,12 @@ type RouteTable struct {
 }
 
 type EnvironmentTable struct {
-	EnvironmentEntries []EnvironmentEntry `xml:"environment-entry"`
+	EnvironmentEntries []EnvironmentItem `xml:"environment-item"`
 }
 
-type EnvironmentEntry struct {
+type EnvironmentItem struct {
 	Name        TrimmedString `xml:"name"`
+	Class       TrimmedString `xml:"class"`
 	Status      TrimmedString `xml:"status"`
 	Temperature TrimmedString `xml:"temperature"`
 }
