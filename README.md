@@ -156,6 +156,12 @@ Views | CLI equivilent
 `storage` | `show system storage`
 `firewallpolicy` | `show security policies` (SRX only)
 `lldp` | `show lldp neighbors`
+`environment` | `show chassis environment`
+`ike` | `show ike security-associations`
+`ipsec` | `show ipsec security-associations`
+`ospfneighbor` | `show ospf neighbor`
+`ospfdatabase` | `show ospf database`
+
 
 >**NOTE**: Clustered SRX's will only show the NAT rules from one of the nodes, since they are duplicated on the other.
 
@@ -221,5 +227,6 @@ Interface: reth0.1
 [views](https://github.com/adammmmm/go-junos#views)
 
 [authmethod](https://godoc.org/github.com/adammmmm/go-junos#AuthMethod)
+
 
 
