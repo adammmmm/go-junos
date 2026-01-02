@@ -235,4 +235,3 @@ Interface: reth0.1
 [authmethod](https://godoc.org/github.com/adammmmm/go-junos#AuthMethod)
 
 
-
