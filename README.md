@@ -1,7 +1,7 @@
 ## go-junos
 [![GoDoc](https://godoc.org/github.com/scottdware/go-junos?status.svg)](https://godoc.org/github.com/scottdware/go-junos) [![Travis-CI](https://travis-ci.org/scottdware/go-junos.svg?branch=master)](https://travis-ci.org/scottdware/go-junos) [![Go Report Card](https://goreportcard.com/badge/github.com/scottdware/go-junos)](https://goreportcard.com/report/github.com/scottdware/go-junos)
 
-A Go package that interacts with Junos devices, as well as Junos Space, and allows you to do the following:
+A Go package that interacts with Junos devices, and allows you to do the following:
 
 * Run operational mode commands, such as `show`, `request`, etc..
 * Compare the active configuration to a rollback configuration (diff).
@@ -10,18 +10,6 @@ A Go package that interacts with Junos devices, as well as Junos Space, and allo
 * Commit operations: lock, unlock, commit, commit at, commit confirmed, commit full.
 * [Device views][views] - This will allow you to quickly get all the information on the device for the specified view.
 * [SRX] Convert from a zone-based address book to a global one.
-
-Junos Space <= 15.2
-
-* Get information from Junos Space managed devices.
-* Add/remove devices from Junos Space.
-* List all software image packages that are in Junos Space.
-* Stage and deploy software images to devices from Junos Space.
-* Create, edit and delete address and service objects/groups.
-* Edit address and service groups by adding or removing objects to them.
-* View all policies managed by Junos Space.
-* Publish policies and update devices.
-* Add/modify polymorphic (variable) objects.
 
 ### Installation
 `go get -u github.com/adammmmm/go-junos`
