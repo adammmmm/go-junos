@@ -54,6 +54,58 @@ type RouteTable struct {
 	Entries        []Route       `xml:"rt"`
 }
 
+type EnvironmentTable struct {
+	EnvironmentEntries []EnvironmentEntry `xml:"environment-entry"`
+}
+
+type EnvironmentEntry struct {
+	Name        TrimmedString `xml:"name"`
+	Status      TrimmedString `xml:"status"`
+	Temperature TrimmedString `xml:"temperature"`
+}
+
+// get-ike-security-associations-information
+type IKESAs struct {
+	IKESecurityAssociations []IKESecurityAssociation `xml:"ike-security-associations"`
+}
+
+type IKESecurityAssociation struct {
+	IKESARemoteAddress   TrimmedString `xml:"ike-sa-remote-address"`
+	IKESAIndex           int           `xml:"ike-sa-index"`
+	IKESAState           TrimmedString `xml:"ike-sa-state"`
+	IKESAInitiatorCookie TrimmedString `xml:"ike-sa-initiator-cookie"`
+	IKESAResponderCookie TrimmedString `xml:"ike-sa-responder-cookie"`
+	IKESAExchangeType    TrimmedString `xml:"ike-sa-exchange-type"`
+}
+
+// get-security-associations-information
+type IPSecSAs struct {
+	TotalActiveTunnels             int          `xml:"total-active-tunnels"`
+	TotalIPSecSAs                  int          `xml:"total-ipsec-sas"`
+	IPSecSecurityAssociationsBlock IPSecSABlock `xml:"ipsec-security-associations-block"`
+}
+
+type IPSecSABlock struct {
+	SABlockState              TrimmedString              `xml:"sa-block-state"`
+	IPSecSecurityAssociations []IPSecSecurityAssociation `xml:"ipsec-security-associations"`
+}
+
+type IPSecSecurityAssociation struct {
+	SADirection             TrimmedString `xml:"sa-direction"`
+	SATunnelIndex           int           `xml:"sa-tunnel-index"`
+	SASPI                   TrimmedString `xml:"sa-spi"`
+	SAAUXSPI                TrimmedString `xml:"sa-aux-spi"`
+	SARemoteGateway         TrimmedString `xml:"sa-remote-gateway"`
+	SAPort                  int           `xml:"sa-port"`
+	SAVPNMonitoringState    TrimmedString `xml:"sa-vpn-monitoring-state"`
+	SAProtocol              TrimmedString `xml:"sa-protocol"`
+	SAESPEncryptionProtocol TrimmedString `xml:"sa-esp-encryption-protocol"`
+	SAHMACAlgorithm         TrimmedString `xml:"sa-hmac-algorithm"`
+	SAHardLifetime          int           `xml:"sa-hard-lifetime"`
+	SALifesizeRemaining     TrimmedString `xml:"sa-lifesize-remaining"`
+	SAVirtualSystem         TrimmedString `xml:"sa-virtual-system"`
+}
+
 // Route holds information about each individual route.
 type Route struct {
 	Destination           TrimmedString `xml:"rt-destination"`
@@ -437,6 +489,9 @@ type Views struct {
 	Storage        Storage
 	VirtualChassis VirtualChassis
 	Vlan           Vlans
+	Environment    EnvironmentTable
+	IKESAs         IKESAs
+	IPSecSAs       IPSecSAs
 }
 
 var (
@@ -447,6 +502,7 @@ var (
 		"vlan":           "<get-vlan-information/>",
 		"lldp":           "<get-lldp-neighbors-information/>",
 		"ethernetswitch": "<get-ethernet-switching-table-information/>",
+		"environment":    "<get-environment-information/>",
 		"inventory":      "<get-chassis-inventory/>",
 		"virtualchassis": "<get-virtual-chassis-information/>",
 		"bgp":            "<get-bgp-summary-information/>",
@@ -454,6 +510,8 @@ var (
 		"sourcenat":      "<get-source-nat-rule-sets-information><all/></get-source-nat-rule-sets-information>",
 		"storage":        "<get-system-storage/>",
 		"firewallpolicy": "<get-firewall-policies/>",
+		"ike":            "<get-ike-security-associations-information/>",
+		"ipsec":          "<get-security-associations-information/>",
 	}
 )
 
@@ -736,6 +794,27 @@ func (j *Junos) View(view string, option ...string) (*Views, error) {
 			return nil, err
 		}
 		results.LLDPNeighbors = lldpNeighbors
+
+	case "environment":
+		var envs EnvironmentTable
+		if err := xml.Unmarshal(data, &envs); err != nil {
+			return nil, err
+		}
+		results.Environment = envs
+
+	case "ike":
+		var ikeSAs IKESAs
+		if err := xml.Unmarshal(data, &ikeSAs); err != nil {
+			return nil, err
+		}
+		results.IKESAs = ikeSAs
+
+	case "ipsec":
+		var ipsecSAs IPSecSAs
+		if err := xml.Unmarshal(data, &ipsecSAs); err != nil {
+			return nil, err
+		}
+		results.IPSecSAs = ipsecSAs
 
 	case "ethernetswitch":
 		var ethtable EthernetSwitchingTable
